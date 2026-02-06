@@ -26,8 +26,7 @@ fn configurations_dir() -> Result<PathBuf> {
 /// Write a gcloud configuration file for the given profile.
 fn write_gcloud_configuration(profile_name: &str, account: &str, project: &str) -> Result<()> {
     let dir = configurations_dir()?;
-    let config_name = format!("gcloud-switch-{}", profile_name);
-    let config_path = dir.join(format!("config_{}", config_name));
+    let config_path = dir.join(format!("config_{}", profile_name));
 
     let content = format!(
         "[core]\naccount = {}\nproject = {}\n",
@@ -42,8 +41,7 @@ fn write_gcloud_configuration(profile_name: &str, account: &str, project: &str) 
 fn set_active_config(profile_name: &str) -> Result<()> {
     let config_dir = gcloud_config_dir()?;
     let active_config_path = config_dir.join("active_config");
-    let config_name = format!("gcloud-switch-{}", profile_name);
-    fs::write(&active_config_path, &config_name).with_context(|| {
+    fs::write(&active_config_path, profile_name).with_context(|| {
         format!(
             "Failed to write active_config at {}",
             active_config_path.display()
@@ -104,6 +102,9 @@ pub fn activate_both(
 pub fn reauth_user(account: &str) -> Result<()> {
     let status = Command::new("gcloud")
         .args(["auth", "login", &format!("--account={}", account)])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .context("Failed to run gcloud auth login")?;
     if !status.success() {
@@ -305,10 +306,6 @@ pub fn discover_existing_configs() -> Result<Vec<(String, String, String)>> {
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
-            // Skip configs we created ourselves
-            if file_name.starts_with("config_gcloud-switch-") {
-                continue;
-            }
             if let Some(name) = file_name.strip_prefix("config_") {
                 if let Ok(content) = fs::read_to_string(entry.path()) {
                     let mut account = String::new();

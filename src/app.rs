@@ -25,12 +25,20 @@ pub enum InputMode {
     EditProject,
 }
 
+/// A shell command that requires TUI suspension (e.g. interactive gcloud auth).
+pub enum PendingAction {
+    None,
+    Reauth,
+    ReauthAndActivate,
+}
+
 pub struct App {
     pub store: Store,
     pub profile_names: Vec<String>,
     pub profiles: Vec<Profile>,
     pub active_profile: Option<String>,
-    pub auth_valid: Vec<bool>,
+    pub user_auth_valid: Vec<bool>,
+    pub adc_auth_valid: Vec<bool>,
     pub selected_row: usize,
     pub selected_col: Column,
     pub should_quit: bool,
@@ -46,6 +54,9 @@ pub struct App {
     pub edit_project_buffer: String,
     pub suggestions: Vec<String>,
     pub suggestion_index: Option<usize>,
+    // Pending action that needs TUI suspended
+    pub pending_action: PendingAction,
+    pub quit_after_activate: bool,
 }
 
 impl App {
@@ -58,9 +69,13 @@ impl App {
         let profiles: Vec<Profile> = profiles_file.profiles.values().cloned().collect();
         let active_profile = state.active_profile;
 
-        let auth_valid: Vec<bool> = profiles
+        let user_auth_valid: Vec<bool> = profiles
             .iter()
             .map(|p| gcloud::check_account_auth(&p.user_account))
+            .collect();
+        let adc_auth_valid: Vec<bool> = profiles
+            .iter()
+            .map(|p| gcloud::check_account_auth(&p.adc_account))
             .collect();
 
         let selected_row = if let Some(ref active) = active_profile {
@@ -77,7 +92,8 @@ impl App {
             profile_names,
             profiles,
             active_profile,
-            auth_valid,
+            user_auth_valid,
+            adc_auth_valid,
             selected_row,
             selected_col: Column::Both,
             should_quit: false,
@@ -96,6 +112,8 @@ impl App {
             edit_project_buffer: String::new(),
             suggestions: Vec::new(),
             suggestion_index: None,
+            pending_action: PendingAction::None,
+            quit_after_activate: false,
         })
     }
 
@@ -105,10 +123,15 @@ impl App {
         self.profile_names = profiles_file.profiles.keys().cloned().collect();
         self.profiles = profiles_file.profiles.values().cloned().collect();
         self.active_profile = state.active_profile;
-        self.auth_valid = self
+        self.user_auth_valid = self
             .profiles
             .iter()
             .map(|p| gcloud::check_account_auth(&p.user_account))
+            .collect();
+        self.adc_auth_valid = self
+            .profiles
+            .iter()
+            .map(|p| gcloud::check_account_auth(&p.adc_account))
             .collect();
         if self.selected_row >= self.profile_names.len() {
             self.selected_row = self.profile_names.len().saturating_sub(1);
@@ -133,26 +156,26 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.should_quit = true;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 if !self.profile_names.is_empty() && self.selected_row > 0 {
                     self.selected_row -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 if !self.profile_names.is_empty()
                     && self.selected_row < self.profile_names.len() - 1
                 {
                     self.selected_row += 1;
                 }
             }
-            KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Left => {
                 self.selected_col = match self.selected_col {
                     Column::Both => Column::Both,
                     Column::User => Column::Both,
                     Column::Adc => Column::User,
                 };
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Right => {
                 self.selected_col = match self.selected_col {
                     Column::Both => Column::User,
                     Column::User => Column::Adc,
@@ -161,15 +184,19 @@ impl App {
             }
             KeyCode::Enter => {
                 if !self.profile_names.is_empty() {
+                    self.quit_after_activate = !key.modifiers.contains(KeyModifiers::ALT);
                     self.activate_selected()?;
-                    if !key.modifiers.contains(KeyModifiers::ALT) {
+                    // Only quit now if no pending reauth (otherwise quit after reauth completes)
+                    if self.quit_after_activate
+                        && matches!(self.pending_action, PendingAction::None)
+                    {
                         self.should_quit = true;
                     }
                 }
             }
             KeyCode::Char('r') => {
                 if !self.profile_names.is_empty() {
-                    self.reauth_selected()?;
+                    self.pending_action = PendingAction::Reauth;
                 }
             }
             KeyCode::Char('a') | KeyCode::Char('n') => {
@@ -443,26 +470,28 @@ impl App {
     }
 
     fn activate_selected(&mut self) -> Result<()> {
+        let user_valid = self.user_auth_valid.get(self.selected_row).copied().unwrap_or(false);
+        let adc_valid = self.adc_auth_valid.get(self.selected_row).copied().unwrap_or(false);
+
+        // Defer to main loop if interactive reauth is needed
+        let needs_reauth = match self.selected_col {
+            Column::Both => !user_valid || !adc_valid,
+            Column::User => !user_valid,
+            Column::Adc => !adc_valid,
+        };
+        if needs_reauth {
+            self.pending_action = PendingAction::ReauthAndActivate;
+            return Ok(());
+        }
+
+        self.do_activate()?;
+        Ok(())
+    }
+
+    /// Execute activation (called directly or after reauth completes).
+    pub fn do_activate(&mut self) -> Result<()> {
         let name = self.profile_names[self.selected_row].clone();
         let profile = self.profiles[self.selected_row].clone();
-        let is_valid = self.auth_valid.get(self.selected_row).copied().unwrap_or(false);
-
-        // Auto-reauth if token is invalid
-        if !is_valid {
-            match self.selected_col {
-                Column::Both => {
-                    gcloud::reauth_user(&profile.user_account)?;
-                    let _ = gcloud::reauth_adc(&self.store, &name, &profile.adc_quota_project);
-                }
-                Column::User => {
-                    gcloud::reauth_user(&profile.user_account)?;
-                }
-                Column::Adc => {
-                    gcloud::reauth_adc(&self.store, &name, &profile.adc_quota_project)?;
-                }
-            }
-            self.auth_valid[self.selected_row] = true;
-        }
 
         match self.selected_col {
             Column::Both => {
@@ -492,25 +521,25 @@ impl App {
         Ok(())
     }
 
-    fn reauth_selected(&mut self) -> Result<()> {
+    /// Execute a reauth that was deferred for TUI suspension.
+    pub fn execute_reauth(&mut self) -> Result<()> {
         let name = self.profile_names[self.selected_row].clone();
         let profile = self.profiles[self.selected_row].clone();
 
         match self.selected_col {
             Column::User | Column::Both => {
-                self.status_message = Some(format!("Re-authenticating user for '{}'...", name));
                 gcloud::reauth_user(&profile.user_account)?;
                 gcloud::activate_user(&name, &profile.user_account, &profile.user_project)?;
                 self.status_message =
                     Some(format!("User re-authenticated for '{}'.", name));
             }
             Column::Adc => {
-                self.status_message = Some(format!("Re-authenticating ADC for '{}'...", name));
                 gcloud::reauth_adc(&self.store, &name, &profile.adc_quota_project)?;
                 self.status_message = Some(format!("ADC re-authenticated for '{}'.", name));
             }
         }
 
+        self.reload()?;
         Ok(())
     }
 }

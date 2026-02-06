@@ -15,7 +15,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::App;
+use crate::app::{App, PendingAction};
 use crate::profile::Profile;
 use crate::store::Store;
 
@@ -199,6 +199,47 @@ fn run_tui() -> Result<()> {
 
         if app.handle_event()? {
             break;
+        }
+
+        // Handle pending actions that need TUI suspended (interactive gcloud commands)
+        if !matches!(app.pending_action, PendingAction::None) {
+            let is_activate = matches!(app.pending_action, PendingAction::ReauthAndActivate);
+            app.pending_action = PendingAction::None;
+
+            // Suspend TUI: leave alternate screen and restore normal terminal mode
+            disable_raw_mode()?;
+            execute!(
+                io::stdout(),
+                LeaveAlternateScreen,
+                DisableMouseCapture,
+                crossterm::cursor::Show
+            )?;
+            {
+                use std::io::Write;
+                io::stdout().flush()?;
+            }
+
+            // Run interactive gcloud commands
+            let reauth_result = app.execute_reauth();
+
+            // If reauth succeeded and this was an activate flow, do the activation
+            if is_activate && reauth_result.is_ok() {
+                let _ = app.do_activate();
+                if app.quit_after_activate {
+                    if let Some(msg) = &app.status_message {
+                        use std::io::Write;
+                        print!("\r\n{}\r\n", msg);
+                        io::stdout().flush()?;
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Resume TUI
+            enable_raw_mode()?;
+            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+            // Force ratatui to do a full redraw since the screen was cleared
+            terminal.clear()?;
         }
     }
 

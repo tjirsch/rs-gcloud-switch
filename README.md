@@ -33,10 +33,10 @@ Opens an interactive table of profiles. Use the keyboard to navigate and activat
 
 | Key | Action |
 |-----|--------|
-| `j` / `Down` | Move selection down |
-| `k` / `Up` | Move selection up |
-| `h` / `Left` | Move column left (Both -> User) |
-| `l` / `Right` | Move column right (User -> ADC) |
+| `Down` | Move selection down |
+| `Up` | Move selection up |
+| `Left` | Move column left (Both -> User) |
+| `Right` | Move column right (User -> ADC) |
 | `Enter` | Activate selected profile and quit |
 | `Alt+Enter` | Activate selected profile and stay |
 | `r` | Re-authenticate selected profile |
@@ -105,7 +105,7 @@ adc_quota_project = "my-project"
 
 When a profile is activated:
 
-1. **User config**: A gcloud configuration file is written to `~/.config/gcloud/configurations/config_gcloud-switch-<name>` and set as the active config in `~/.config/gcloud/active_config`
+1. **User config**: A gcloud configuration file is written to `~/.config/gcloud/configurations/config_<name>` and set as the active config in `~/.config/gcloud/active_config`
 2. **ADC**: The stored ADC JSON is copied to `~/.config/gcloud/application_default_credentials.json`
 
 ### Auth Validation

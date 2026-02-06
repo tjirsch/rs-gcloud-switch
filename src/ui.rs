@@ -70,55 +70,37 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(i, (name, profile))| {
             let is_active = app.active_profile.as_deref() == Some(name.as_str());
             let is_selected = i == app.selected_row;
-            let is_auth_valid = app.auth_valid.get(i).copied().unwrap_or(false);
+            let is_user_auth_valid = app.user_auth_valid.get(i).copied().unwrap_or(false);
+            let is_adc_auth_valid = app.adc_auth_valid.get(i).copied().unwrap_or(false);
 
-            let lock_icon = if is_auth_valid { "\u{2705} " } else { "\u{1F512} " };
-            let prefix = if is_active { "* " } else { "" };
-            let profile_name = format!("{}{}{}", lock_icon, prefix, name);
+            let profile_name = name.to_string();
 
             let is_editing = i == app.selected_row
                 && matches!(app.input_mode, InputMode::EditAccount | InputMode::EditProject);
             let edit_bg = Color::Indexed(17); // dark blue edit background
 
+            let user_lock = if is_user_auth_valid { "" } else { " \u{1F512}" };
             let user_info = if is_editing && app.edit_col == Column::User {
-                let acct = if app.input_mode == InputMode::EditAccount {
-                    format!("{}\u{2588}", app.edit_account_buffer)
-                } else {
-                    app.edit_account_buffer.clone()
-                };
-                let proj = if app.input_mode == InputMode::EditProject {
-                    format!("{}\u{2588}", app.edit_project_buffer)
-                } else {
-                    app.edit_project_buffer.clone()
-                };
-                format!("{}\n{}", acct, proj)
+                format!("{}\n{}", app.edit_account_buffer, app.edit_project_buffer)
             } else {
-                format!("{}\n{}", profile.user_account, profile.user_project)
+                format!("{}{}\n{}", profile.user_account, user_lock, profile.user_project)
             };
 
+            let adc_lock = if is_adc_auth_valid { "" } else { " \u{1F512}" };
             let adc_info = if is_editing && app.edit_col == Column::Adc {
-                let acct = if app.input_mode == InputMode::EditAccount {
-                    format!("{}\u{2588}", app.edit_account_buffer)
-                } else {
-                    app.edit_account_buffer.clone()
-                };
-                let proj = if app.input_mode == InputMode::EditProject {
-                    format!("{}\u{2588}", app.edit_project_buffer)
-                } else {
-                    app.edit_project_buffer.clone()
-                };
-                format!("{}\n{}", acct, proj)
+                format!("{}\n{}", app.edit_account_buffer, app.edit_project_buffer)
             } else {
-                format!("{}\n{}", profile.adc_account, profile.adc_quota_project)
+                format!("{}{}\n{}", profile.adc_account, adc_lock, profile.adc_quota_project)
             };
 
-            let row_bg = if is_selected {
+            let row_bg = if is_selected && app.selected_col == Column::Both {
                 Color::Indexed(236) // subtle dark gray for the whole row
             } else {
                 Color::Reset
             };
 
-            let highlight_bg = Color::Indexed(24);
+            let highlight_bg = Color::Indexed(24);  // dark blue for Both mode
+            let col_highlight_bg = Color::Indexed(39); // light blue for column mode
 
             let profile_bg = if is_selected && app.selected_col == Column::Both {
                 highlight_bg
@@ -129,39 +111,42 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().bg(profile_bg).fg(Color::Green).add_modifier(Modifier::BOLD)
             } else if is_selected && app.selected_col == Column::Both {
                 Style::default().bg(profile_bg).fg(Color::White).add_modifier(Modifier::BOLD)
-            } else if !is_auth_valid {
-                Style::default().bg(row_bg).fg(Color::DarkGray)
             } else {
                 Style::default().bg(row_bg)
             };
 
             let user_editing = is_editing && app.edit_col == Column::User;
-            let user_selected = is_selected
-                && (app.selected_col == Column::User || app.selected_col == Column::Both);
+            let user_selected = is_selected && app.selected_col == Column::User;
+            let user_both = is_selected && app.selected_col == Column::Both;
             let user_style = if user_editing {
                 Style::default().bg(edit_bg).fg(Color::White)
             } else if user_selected {
+                Style::default().bg(col_highlight_bg).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else if user_both {
                 Style::default().bg(highlight_bg).fg(Color::White).add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().bg(row_bg).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(row_bg)
             };
 
             let adc_editing = is_editing && app.edit_col == Column::Adc;
-            let adc_selected = is_selected
-                && (app.selected_col == Column::Adc || app.selected_col == Column::Both);
+            let adc_selected = is_selected && app.selected_col == Column::Adc;
+            let adc_both = is_selected && app.selected_col == Column::Both;
             let adc_style = if adc_editing {
                 Style::default().bg(edit_bg).fg(Color::White)
             } else if adc_selected {
+                Style::default().bg(col_highlight_bg).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else if adc_both {
                 Style::default().bg(highlight_bg).fg(Color::White).add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().bg(row_bg).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(row_bg)
             };
 
-            let row_style = if is_selected {
-                match app.selected_col {
-                    Column::Both => Style::default().bg(highlight_bg),
-                    _ => Style::default().bg(row_bg),
-                }
+            let row_style = if is_selected && app.selected_col == Column::Both {
+                Style::default().bg(highlight_bg)
             } else {
                 Style::default()
             };
@@ -183,7 +168,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
     }
     // Data widths
     for (name, profile) in app.profile_names.iter().zip(app.profiles.iter()) {
-        let profile_w = name.len() + 4; // lock icon + "* " prefix
+        let profile_w = name.len();
         col_max[0] = col_max[0].max(profile_w);
         col_max[1] = col_max[1]
             .max(profile.user_account.len())
@@ -204,6 +189,37 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         .row_highlight_style(Style::default());
 
     frame.render_widget(table, area);
+
+    // Position the terminal cursor for blinking edit cursor
+    if matches!(app.input_mode, InputMode::EditAccount | InputMode::EditProject) {
+        let inner_w = area.width.saturating_sub(2) as usize;
+        // Compute actual column widths (matching the percentage constraints)
+        let col_px: Vec<usize> = col_max
+            .iter()
+            .map(|w| (w * inner_w / total).max(1))
+            .collect();
+
+        let col_offset: usize = match app.edit_col {
+            Column::User => col_px[0],
+            Column::Adc => col_px[0] + col_px[1],
+            Column::Both => col_px[0],
+        };
+
+        let buf_len = if app.input_mode == InputMode::EditAccount {
+            app.edit_account_buffer.len()
+        } else {
+            app.edit_project_buffer.len()
+        };
+
+        let cursor_x = area.x + 1 + col_offset as u16 + buf_len as u16;
+        let cursor_y = area.y
+            + 1  // top border
+            + 2  // header height
+            + (app.selected_row as u16) * 2
+            + if app.input_mode == InputMode::EditProject { 1 } else { 0 };
+
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -251,7 +267,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            " \u{2191}\u{2193}/jk navigate  \u{2190}\u{2192}/hl column  Enter activate+quit  Alt+Enter activate+stay  r reauth  e edit  q quit  a add  d delete"
+            " \u{2191}\u{2193} navigate  \u{2190}\u{2192} column  Enter activate+quit  Alt+Enter activate+stay  r reauth  e edit  q quit  a add  d delete"
         }
         InputMode::ConfirmDelete => " y confirm  n/Esc cancel",
         InputMode::EditAccount | InputMode::EditProject => {
