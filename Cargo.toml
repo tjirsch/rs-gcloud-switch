@@ -1,0 +1,18 @@
+[package]
+name = "gcloud-switch"
+version = "0.1.0"
+edition = "2021"
+description = "TUI Google Cloud profile switcher"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+dirs = "6"
+ratatui = "0.29"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
