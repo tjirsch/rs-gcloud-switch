@@ -7,7 +7,7 @@ A TUI (Terminal User Interface) tool for managing and switching between multiple
 - Interactive TUI for browsing and activating profiles
 - Manages both **user credentials** (`gcloud auth`) and **ADC** (`gcloud auth application-default`) per profile
 - Auto-detects expired tokens and triggers re-authentication before activation
-- Visual auth status indicators (locked/unlocked) per profile
+- Visual auth status indicators (🔑 valid / 🔒 expired) per profile
 - Import existing gcloud configurations
 - CLI subcommands for scripting
 
@@ -18,6 +18,17 @@ cargo install --path .
 ```
 
 Requires Rust 1.70+ and a working `gcloud` CLI installation.
+
+## Development
+
+```bash
+cargo build                # Debug build
+cargo build --release      # Release build
+cargo run                  # Build and run the TUI
+cargo check                # Quick type-check without building
+cargo clippy               # Lint
+cargo fmt                  # Format code
+```
 
 ## Usage
 
@@ -56,7 +67,7 @@ Opens an interactive table of profiles. Use the keyboard to navigate and activat
 | `Tab` | Move from account field to project field; save from project |
 | `Esc` | Cancel edit without saving |
 
-Suggestions include all account emails from existing profiles plus all authenticated accounts from gcloud's credential store.
+Suggestions include all account emails from existing profiles plus all authenticated accounts from gcloud's credential store. Project suggestions also include GCP projects accessible by the entered account.
 
 ### Column Selection
 
@@ -91,7 +102,7 @@ gcloud-switch import
 
 ### Profile Storage
 
-Profiles are stored in `~/.config/gcloud-switch/profiles.toml`:
+Profiles are stored in `~/.config/gcloud/gcloud-switch/profiles.toml`:
 
 ```toml
 [profiles.myprofile]
@@ -105,15 +116,15 @@ adc_quota_project = "my-project"
 
 When a profile is activated:
 
-1. **User config**: A gcloud configuration file is written to `~/.config/gcloud/configurations/config_<name>` and set as the active config in `~/.config/gcloud/active_config`
+1. **User config**: A gcloud configuration is created (if needed) and activated via `gcloud config configurations activate`, then account and project are set via `gcloud config set`
 2. **ADC**: The stored ADC JSON is copied to `~/.config/gcloud/application_default_credentials.json`
 
 ### Auth Validation
 
 On startup, gcloud-switch reads `~/.config/gcloud/credentials.db` (a SQLite database maintained by gcloud) to look up stored OAuth2 credentials for each profile's account. It then performs a token refresh request to validate whether the credentials are still valid. The result is shown as a lock indicator:
 
-- Unlocked: Token is valid, profile can be activated immediately
-- Locked: Token is expired or missing, re-authentication will be triggered on activation
+- 🔑 Token is valid, profile can be activated immediately
+- 🔒 Token is expired or missing, re-authentication will be triggered on activation
 
 ### Re-authentication
 
@@ -127,13 +138,35 @@ You can also manually trigger re-auth with the `r` key.
 
 | Path | Description |
 |------|-------------|
-| `~/.config/gcloud-switch/profiles.toml` | Profile definitions |
-| `~/.config/gcloud-switch/state.toml` | Active profile state |
-| `~/.config/gcloud-switch/adc/<name>.json` | Stored ADC credentials per profile |
+| `~/.config/gcloud/gcloud-switch/profiles.toml` | Profile definitions |
+| `~/.config/gcloud/gcloud-switch/state.toml` | Active profile state |
+| `~/.config/gcloud/gcloud-switch/adc/<name>.json` | Stored ADC credentials per profile |
 | `~/.config/gcloud/credentials.db` | gcloud's OAuth2 credential store (read-only) |
 | `~/.config/gcloud/configurations/` | gcloud configuration files (written on activate) |
 | `~/.config/gcloud/active_config` | gcloud's active configuration pointer |
 | `~/.config/gcloud/application_default_credentials.json` | Active ADC file |
+
+## Architecture
+
+Six modules with clear separation:
+
+- **main.rs** — CLI parsing (clap) and TUI lifecycle. Subcommands: `add`, `list`, `switch`, `import`, or no subcommand for interactive TUI. Handles TUI suspend/resume when spawning interactive gcloud auth commands.
+- **app.rs** — Core state machine. Manages `InputMode` (Normal, Edit, AddProfile, ConfirmDelete), profile selection, background auth checking, edit suggestions, and pending actions. The `Column` enum controls whether activation targets both user+ADC, user-only, or ADC-only credentials.
+- **ui.rs** — Ratatui rendering. Layout is 4 rows: title, table, status bar, help line. Renders inline editing with cursor positioning and dropdown suggestion overlays.
+- **gcloud.rs** — All gcloud CLI and OAuth2 integration. Manages configurations via gcloud CLI commands, queries `credentials.db` (SQLite, read-only) for OAuth tokens, validates tokens via Google's token endpoint, and spawns `gcloud auth login` / `gcloud auth application-default login`.
+- **store.rs** — Persistent storage in `~/.config/gcloud/gcloud-switch/`. Profiles stored as TOML, ADC credentials as JSON files per profile.
+- **profile.rs** — Data structures: `Profile` (user_account, user_project, adc_account, adc_quota_project), `ProfilesFile`, `StateFile`.
+
+### Key Design Decisions
+
+- Auth validation runs on background threads (not tokio tasks) because `rusqlite` and `reqwest::blocking` would conflict with the tokio runtime. Auth checks are deduplicated by account.
+- TUI must suspend (restore terminal, drop alternate screen) before spawning interactive gcloud commands, then resume after.
+- `PendingAction` enum defers actions that require TUI suspension until the main loop can handle them outside the event handler.
+- Profile activation uses gcloud CLI (`gcloud config configurations activate`, `gcloud config set`) to ensure gcloud's internal state stays consistent. ADC file copy is the only direct file operation (no gcloud CLI equivalent exists).
+
+### Dependencies
+
+Key crates: `ratatui` + `crossterm` (TUI), `clap` (CLI), `tokio` (async runtime), `reqwest` (HTTP for token validation), `rusqlite` with bundled SQLite (credentials.db access), `serde` + `toml` + `serde_json` (serialization), `anyhow` (error handling).
 
 ## License
 

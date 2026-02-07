@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{App, PendingAction};
-use crate::profile::Profile;
+use crate::profile::{Profile, SyncMode};
 use crate::store::Store;
 
 #[derive(Parser)]
@@ -56,8 +56,7 @@ enum Commands {
     Import,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -69,24 +68,27 @@ async fn main() -> Result<()> {
             adc_quota_project,
         }) => {
             let store = Store::new()?;
+            let data = store.load_profiles()?;
             let profile = Profile {
                 user_account: account.clone(),
                 user_project: project.clone(),
                 adc_account: adc_account.unwrap_or_else(|| account.clone()),
                 adc_quota_project: adc_quota_project.unwrap_or_else(|| project.clone()),
             };
-            store.add_profile(&name, profile)?;
+            store.add_profile(&name, profile.clone())?;
+            if matches!(data.sync_mode, SyncMode::Strict | SyncMode::Add) {
+                gcloud::create_configuration(&name, &profile.user_account, &profile.user_project)?;
+            }
             println!("Profile '{}' added.", name);
         }
         Some(Commands::List) => {
             let store = Store::new()?;
-            let profiles = store.load_profiles()?;
-            let state = store.load_state()?;
-            if profiles.profiles.is_empty() {
+            let data = store.load_profiles()?;
+            if data.profiles.is_empty() {
                 println!("No profiles configured. Use 'gcloud-switch add' or press 'a' in the TUI.");
             } else {
-                for (name, profile) in &profiles.profiles {
-                    let active = if state.active_profile.as_deref() == Some(name.as_str()) {
+                for (name, profile) in &data.profiles {
+                    let active = if data.active_profile.as_deref() == Some(name.as_str()) {
                         " (active)"
                     } else {
                         ""
@@ -105,19 +107,22 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Switch { name }) => {
             let store = Store::new()?;
-            let profiles = store.load_profiles()?;
-            let profile = profiles
+            let mut data = store.load_profiles()?;
+            let profile = data
                 .profiles
                 .get(&name)
                 .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", name))?;
             gcloud::activate_both(&store, &name, &profile.user_account, &profile.user_project)?;
-            store.save_state(&profile::StateFile {
-                active_profile: Some(name.clone()),
-            })?;
+            data.active_profile = Some(name.clone());
+            store.save_profiles(&data)?;
             println!("Switched to profile '{}'.", name);
         }
         Some(Commands::Import) => {
-            run_import().await?;
+            let store = Store::new()?;
+            let count = import_profiles(&store)?;
+            if count == 0 {
+                println!("No new gcloud configurations found to import.");
+            }
         }
         None => {
             run_tui()?;
@@ -127,64 +132,120 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_import() -> Result<()> {
-    let store = Store::new()?;
+fn import_profiles(store: &Store) -> Result<usize> {
     let configs = gcloud::discover_existing_configs()?;
-
     if configs.is_empty() {
-        println!("No existing gcloud configurations found to import.");
-        return Ok(());
+        return Ok(0);
     }
 
-    let existing = store.load_profiles()?;
+    let mut data = store.load_profiles()?;
+    let mut count = 0;
 
     for (name, account, project) in &configs {
-        if existing.profiles.contains_key(name) {
+        if data.profiles.contains_key(name) {
             println!("Skipping '{}' (already exists).", name);
             continue;
-        }
-
-        // Check for existing ADC and try to resolve account
-        let gcloud_dir = dirs::home_dir()
-            .unwrap()
-            .join(".config/gcloud/application_default_credentials.json");
-        let mut adc_account = account.clone();
-        if gcloud_dir.exists() {
-            if let Ok(content) = std::fs::read_to_string(&gcloud_dir) {
-                if let Ok(adc_json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Ok(Some(email)) = gcloud::resolve_adc_account(&adc_json).await {
-                        adc_account = email;
-                    }
-                }
-            }
         }
 
         let profile = Profile {
             user_account: account.clone(),
             user_project: project.clone(),
-            adc_account,
+            adc_account: account.clone(),
             adc_quota_project: project.clone(),
         };
-        store.add_profile(name, profile)?;
+        data.profiles.insert(name.clone(), profile);
         println!("Imported '{}'.", name);
+        count += 1;
+    }
+
+    // Set active profile from gcloud's active configuration
+    if count > 0 {
+        if let Ok(Some(active)) = gcloud::read_active_config() {
+            if data.profiles.contains_key(&active) {
+                data.active_profile = Some(active.clone());
+                println!("Active profile set to '{}'.", active);
+            }
+        }
+        store.save_profiles(&data)?;
+    }
+
+    Ok(count)
+}
+
+fn sync_on_startup(store: &Store) -> Result<()> {
+    let mut data = store.load_profiles()?;
+
+    // First run: import if no profiles exist
+    if data.profiles.is_empty() {
+        import_profiles(store)?;
+        return Ok(());
+    }
+
+    let mut changed = false;
+
+    match data.sync_mode {
+        SyncMode::Off => {}
+        SyncMode::Add | SyncMode::Strict => {
+            let configs = gcloud::discover_existing_configs()?;
+            let config_names: std::collections::HashSet<String> =
+                configs.iter().map(|(n, _, _)| n.clone()).collect();
+
+            // Add new gcloud configs as profiles
+            for (name, account, project) in &configs {
+                if !data.profiles.contains_key(name) {
+                    let profile = Profile {
+                        user_account: account.clone(),
+                        user_project: project.clone(),
+                        adc_account: account.clone(),
+                        adc_quota_project: project.clone(),
+                    };
+                    data.profiles.insert(name.clone(), profile);
+                    changed = true;
+                }
+            }
+
+            // In strict mode, delete profiles whose gcloud configs no longer exist
+            if data.sync_mode == SyncMode::Strict {
+                let to_delete: Vec<String> = data
+                    .profiles
+                    .keys()
+                    .filter(|name| !config_names.contains(*name))
+                    .cloned()
+                    .collect();
+                for name in &to_delete {
+                    data.profiles.remove(name);
+                    if data.active_profile.as_deref() == Some(name) {
+                        data.active_profile = None;
+                    }
+                    // Remove ADC file if it exists
+                    let adc_path = store.adc_path(name);
+                    if adc_path.exists() {
+                        let _ = std::fs::remove_file(adc_path);
+                    }
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    // Always sync active config from gcloud
+    if let Ok(Some(active)) = gcloud::read_active_config() {
+        if data.profiles.contains_key(&active) && data.active_profile.as_deref() != Some(&active) {
+            data.active_profile = Some(active);
+            changed = true;
+        }
+    }
+
+    if changed {
+        store.save_profiles(&data)?;
     }
 
     Ok(())
 }
 
 fn run_tui() -> Result<()> {
-    // Check for first run and offer import
     let store = Store::new()?;
-    let profiles = store.load_profiles()?;
-    if profiles.profiles.is_empty() {
-        let configs = gcloud::discover_existing_configs()?;
-        if !configs.is_empty() {
-            eprintln!(
-                "Found {} existing gcloud configuration(s). Run 'gcloud-switch import' to import them.",
-                configs.len()
-            );
-        }
-    }
+    sync_on_startup(&store)?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -194,73 +255,78 @@ fn run_tui() -> Result<()> {
 
     let mut app = App::new()?;
 
-    loop {
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+    let loop_result: Result<()> = (|| {
+        loop {
+            app.check_auth_results();
+            app.check_project_results();
+            terminal.draw(|frame| ui::draw(frame, &app))?;
 
-        if app.handle_event()? {
-            break;
-        }
-
-        // Handle pending actions that need TUI suspended (interactive gcloud commands)
-        if !matches!(app.pending_action, PendingAction::None) {
-            let is_activate = matches!(app.pending_action, PendingAction::ReauthAndActivate);
-            app.pending_action = PendingAction::None;
-
-            // Suspend TUI: leave alternate screen and restore normal terminal mode
-            disable_raw_mode()?;
-            execute!(
-                io::stdout(),
-                LeaveAlternateScreen,
-                DisableMouseCapture,
-                crossterm::cursor::Show
-            )?;
-            {
-                use std::io::Write;
-                io::stdout().flush()?;
+            if app.handle_event()? {
+                break;
             }
 
-            // Run interactive gcloud commands
-            let reauth_result = app.execute_reauth();
+            // Handle pending actions that need TUI suspended (interactive gcloud commands)
+            if !matches!(app.pending_action, PendingAction::None) {
+                let is_activate = matches!(app.pending_action, PendingAction::ReauthAndActivate);
+                app.pending_action = PendingAction::None;
 
-            // If reauth succeeded and this was an activate flow, do the activation
-            if is_activate && reauth_result.is_ok() {
-                let _ = app.do_activate();
-                if app.quit_after_activate {
-                    if let Some(msg) = &app.status_message {
-                        use std::io::Write;
-                        print!("\r\n{}\r\n", msg);
-                        io::stdout().flush()?;
-                    }
-                    return Ok(());
+                // Suspend TUI: leave alternate screen and restore normal terminal mode
+                disable_raw_mode()?;
+                execute!(
+                    io::stdout(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture,
+                    crossterm::cursor::Show
+                )?;
+                {
+                    use std::io::Write;
+                    io::stdout().flush()?;
                 }
+
+                // Run interactive gcloud commands
+                let reauth_result = app.execute_reauth();
+
+                // If reauth succeeded and this was an activate flow, do the activation
+                if is_activate && reauth_result.is_ok() {
+                    let _ = app.do_activate();
+                    if app.quit_after_activate {
+                        if let Some(msg) = &app.status_message {
+                            use std::io::Write;
+                            print!("\r\n{}\r\n", msg);
+                            io::stdout().flush()?;
+                        }
+                        return Ok(());
+                    }
+                }
+
+                // Resume TUI
+                enable_raw_mode()?;
+                execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+                // Force ratatui to do a full redraw since the screen was cleared
+                terminal.clear()?;
             }
-
-            // Resume TUI
-            enable_raw_mode()?;
-            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-            // Force ratatui to do a full redraw since the screen was cleared
-            terminal.clear()?;
         }
-    }
+        Ok(())
+    })();
 
-    disable_raw_mode()?;
-    execute!(
+    // Always restore terminal, even if the loop returned an error
+    let _ = disable_raw_mode();
+    let _ = execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture,
         crossterm::style::ResetColor,
         crossterm::cursor::MoveToColumn(0)
-    )?;
-    terminal.show_cursor()?;
-    // Flush to ensure all escape sequences are written before println
+    );
+    let _ = terminal.show_cursor();
     use std::io::Write;
-    io::stdout().flush()?;
+    let _ = io::stdout().flush();
 
     // Print final status message if any
     if let Some(msg) = &app.status_message {
         print!("\r\n{}\r\n", msg);
-        io::stdout().flush()?;
+        let _ = io::stdout().flush();
     }
 
-    Ok(())
+    loop_result
 }

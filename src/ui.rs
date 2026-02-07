@@ -2,24 +2,28 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table,
+    },
     Frame,
 };
 
 use crate::app::{App, Column, InputMode};
+use crate::profile::SyncMode;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1),  // Title
         Constraint::Min(5),    // Table
-        Constraint::Length(1), // Status / input
+        Constraint::Length(1), // Status bar
         Constraint::Length(2), // Help
     ])
     .split(frame.area());
 
     draw_title(frame, chunks[0]);
     draw_table(frame, app, chunks[1]);
-    draw_status(frame, app, chunks[2]);
+    draw_status_bar(frame, app, chunks[2]);
     draw_help(frame, app, chunks[3]);
     draw_suggestions(frame, app, chunks[1]);
 }
@@ -59,7 +63,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         }
     });
     let header = Row::new(header_cells)
-        .height(2)
+        .height(3) // 2 for content + 1 for separator (drawn manually)
         .style(Style::default().bg(Color::Indexed(254)));
 
     let rows = app
@@ -70,23 +74,30 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(i, (name, profile))| {
             let is_active = app.active_profile.as_deref() == Some(name.as_str());
             let is_selected = i == app.selected_row;
-            let is_user_auth_valid = app.user_auth_valid.get(i).copied().unwrap_or(false);
-            let is_adc_auth_valid = app.adc_auth_valid.get(i).copied().unwrap_or(false);
-
             let profile_name = name.to_string();
 
             let is_editing = i == app.selected_row
                 && matches!(app.input_mode, InputMode::EditAccount | InputMode::EditProject);
             let edit_bg = Color::Indexed(17); // dark blue edit background
 
-            let user_lock = if is_user_auth_valid { "" } else { " \u{1F512}" };
+            let user_auth_status = app.user_auth_valid.get(i).copied().flatten();
+            let user_lock = match user_auth_status {
+                Some(true) => " \u{1F511}",
+                Some(false) => " \u{1F512}",
+                None => "",
+            };
             let user_info = if is_editing && app.edit_col == Column::User {
                 format!("{}\n{}", app.edit_account_buffer, app.edit_project_buffer)
             } else {
                 format!("{}{}\n{}", profile.user_account, user_lock, profile.user_project)
             };
 
-            let adc_lock = if is_adc_auth_valid { "" } else { " \u{1F512}" };
+            let adc_auth_status = app.adc_auth_valid.get(i).copied().flatten();
+            let adc_lock = match adc_auth_status {
+                Some(true) => " \u{1F511}",
+                Some(false) => " \u{1F512}",
+                None => "",
+            };
             let adc_info = if is_editing && app.edit_col == Column::Adc {
                 format!("{}\n{}", app.edit_account_buffer, app.edit_project_buffer)
             } else {
@@ -108,7 +119,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
                 row_bg
             };
             let profile_style = if is_active {
-                Style::default().bg(profile_bg).fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default().bg(profile_bg).fg(Color::Black).add_modifier(Modifier::BOLD)
             } else if is_selected && app.selected_col == Column::Both {
                 Style::default().bg(profile_bg).fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
@@ -125,7 +136,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
             } else if user_both {
                 Style::default().bg(highlight_bg).fg(Color::White).add_modifier(Modifier::BOLD)
             } else if is_active {
-                Style::default().bg(row_bg).add_modifier(Modifier::BOLD)
+                Style::default().bg(row_bg).fg(Color::Black).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(row_bg)
             };
@@ -140,7 +151,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
             } else if adc_both {
                 Style::default().bg(highlight_bg).fg(Color::White).add_modifier(Modifier::BOLD)
             } else if is_active {
-                Style::default().bg(row_bg).add_modifier(Modifier::BOLD)
+                Style::default().bg(row_bg).fg(Color::Black).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(row_bg)
             };
@@ -190,6 +201,24 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(table, area);
 
+    // Draw separator line between header and body rows
+    let sep_y = area.y + 3; // top border (1) + header content (2)
+    let sep_style = Style::default().bg(Color::Reset).fg(Color::Reset);
+    if sep_y < area.y + area.height {
+        let buf = frame.buffer_mut();
+        if let Some(cell) = buf.cell_mut((area.x, sep_y)) {
+            cell.set_symbol("├").set_style(sep_style);
+        }
+        for x in (area.x + 1)..(area.x + area.width - 1) {
+            if let Some(cell) = buf.cell_mut((x, sep_y)) {
+                cell.set_symbol("─").set_style(sep_style);
+            }
+        }
+        if let Some(cell) = buf.cell_mut((area.x + area.width - 1, sep_y)) {
+            cell.set_symbol("┤").set_style(sep_style);
+        }
+    }
+
     // Position the terminal cursor for blinking edit cursor
     if matches!(app.input_mode, InputMode::EditAccount | InputMode::EditProject) {
         let inner_w = area.width.saturating_sub(2) as usize;
@@ -214,7 +243,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         let cursor_x = area.x + 1 + col_offset as u16 + buf_len as u16;
         let cursor_y = area.y
             + 1  // top border
-            + 2  // header height
+            + 3  // header height (2) + separator (1)
             + (app.selected_row as u16) * 2
             + if app.input_mode == InputMode::EditProject { 1 } else { 0 };
 
@@ -222,64 +251,104 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let content = match &app.input_mode {
-        InputMode::Normal | InputMode::EditAccount | InputMode::EditProject => {
-            if let Some(ref msg) = app.status_message {
-                Line::from(Span::styled(
-                    format!(" {}", msg),
-                    Style::default().fg(Color::Green),
-                ))
-            } else {
-                Line::from("")
-            }
-        }
-        InputMode::ConfirmDelete => {
-            if let Some(ref msg) = app.status_message {
-                Line::from(Span::styled(
-                    format!(" {}", msg),
-                    Style::default().fg(Color::Red),
-                ))
-            } else {
-                Line::from("")
-            }
-        }
-        _ => {
-            let prompt = app.status_message.as_deref().unwrap_or("Input:");
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", prompt),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    &app.input_buffer,
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled("_", Style::default().fg(Color::Gray)),
-            ])
-        }
+fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let sync_label = match app.sync_mode {
+        SyncMode::Strict => "sync mode: strict",
+        SyncMode::Add => "sync mode: add",
+        SyncMode::Off => "sync mode: off",
     };
 
-    let paragraph = Paragraph::new(content);
-    frame.render_widget(paragraph, area);
+    let is_input_mode = matches!(
+        app.input_mode,
+        InputMode::AddProfileName
+            | InputMode::AddProfileUserAccount
+            | InputMode::AddProfileUserProject
+            | InputMode::AddProfileAdcAccount
+            | InputMode::AddProfileAdcQuotaProject
+    );
+
+    let line = if is_input_mode {
+        let prompt = app.status_message.as_deref().unwrap_or("Input:");
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", prompt),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                app.input_buffer.as_str().to_string(),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled("_", Style::default().fg(Color::Gray)),
+        ])
+    } else {
+        let mut spans = vec![
+            Span::styled(
+                format!(" {}", sync_label),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        if let Some(ref msg) = app.status_message {
+            spans.push(Span::styled(
+                format!("  {}", msg),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        Line::from(spans)
+    };
+
+    let bar = Paragraph::new(line);
+    frame.render_widget(bar, area);
+}
+
+fn help_key(key: &str, desc: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            key.to_string(),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("{} ", desc), Style::default().fg(Color::DarkGray)),
+    ]
 }
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
-    let help_text = match app.input_mode {
+    let spans: Vec<Span> = match app.input_mode {
         InputMode::Normal => {
-            " \u{2191}\u{2193} navigate  \u{2190}\u{2192} column  Enter activate+quit  Alt+Enter activate+stay  r reauth  e edit  q quit  a add  d delete"
+            let mut s = vec![Span::raw(" ")];
+            s.extend(help_key("row:", "\u{2191}\u{2193}"));
+            s.extend(help_key("col:", "\u{2190}\u{2192}"));
+            s.push(Span::styled("activate all/col:", Style::default().fg(Color::DarkGray)));
+            s.push(Span::styled("\u{21b5}  ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+            s.extend(help_key("r", "eauth "));
+            s.extend(help_key("e", "dit "));
+            s.extend(help_key("a", "dd "));
+            s.extend(help_key("d", "el "));
+            s.extend(help_key("s", "ync "));
+            s.extend(help_key("Esc", " quit"));
+            s
         }
-        InputMode::ConfirmDelete => " y confirm  n/Esc cancel",
+        InputMode::ConfirmDelete => {
+            let mut s = vec![Span::raw(" ")];
+            s.extend(help_key("y", "es "));
+            s.extend(help_key("n", "/Esc cancel"));
+            s
+        }
         InputMode::EditAccount | InputMode::EditProject => {
-            " Tab next field  \u{2193} suggestions  Enter save  Esc cancel"
+            let mut s = vec![Span::raw(" ")];
+            s.extend(help_key("Tab", " next "));
+            s.extend(help_key("\u{2193}", " suggestions "));
+            s.extend(help_key("\u{23ce}", " save "));
+            s.extend(help_key("Esc", " cancel"));
+            s
         }
-        _ => " Enter confirm  Esc cancel",
+        _ => {
+            let mut s = vec![Span::raw(" ")];
+            s.extend(help_key("\u{23ce}", "confirm"));
+            s.extend(help_key("Esc", " cancel"));
+            s
+        }
     };
 
-    let help = Paragraph::new(Line::from(Span::styled(
-        help_text,
-        Style::default().fg(Color::DarkGray),
-    )));
+    let help = Paragraph::new(Line::from(spans));
     frame.render_widget(help, area);
 }
 
@@ -337,7 +406,7 @@ fn draw_suggestions(frame: &mut Frame, app: &App, table_area: Rect) {
     } else {
         2 // below the project line
     };
-    let dropdown_y = table_area.y + 1 + 2 + (app.selected_row as u16) * 2 + row_y_offset;
+    let dropdown_y = table_area.y + 1 + 3 + (app.selected_row as u16) * 2 + row_y_offset;
 
     // Dropdown dimensions
     let max_item_width = app
@@ -387,5 +456,20 @@ fn draw_suggestions(frame: &mut Frame, app: &App, table_area: Rect) {
             .border_style(Style::default().fg(Color::Cyan)),
     );
 
-    frame.render_widget(list, dropdown_area);
+    let mut list_state = ListState::default().with_selected(Some(selected_idx));
+    frame.render_stateful_widget(list, dropdown_area, &mut list_state);
+
+    // Scrollbar (only if items overflow the visible area)
+    let visible_items = dropdown_area.height.saturating_sub(2) as usize; // minus borders
+    if app.suggestions.len() > visible_items {
+        let mut scrollbar_state = ScrollbarState::new(app.suggestions.len().saturating_sub(visible_items))
+            .position(selected_idx.saturating_sub(visible_items / 2).min(app.suggestions.len().saturating_sub(visible_items)));
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_stateful_widget(
+            scrollbar,
+            dropdown_area.inner(ratatui::layout::Margin { horizontal: 0, vertical: 1 }),
+            &mut scrollbar_state,
+        );
+    }
 }

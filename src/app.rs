@@ -1,9 +1,13 @@
+use std::sync::mpsc;
+use std::time::Duration;
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
 use crate::gcloud;
-use crate::profile::{Profile, StateFile};
+use crate::profile::{Profile, SyncMode};
 use crate::store::Store;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
@@ -32,13 +36,21 @@ pub enum PendingAction {
     ReauthAndActivate,
 }
 
+/// Result from a background auth check thread.
+struct AuthResult {
+    generation: u64,
+    profile_index: usize,
+    is_user: bool,
+    valid: bool,
+}
+
 pub struct App {
     pub store: Store,
     pub profile_names: Vec<String>,
     pub profiles: Vec<Profile>,
     pub active_profile: Option<String>,
-    pub user_auth_valid: Vec<bool>,
-    pub adc_auth_valid: Vec<bool>,
+    pub user_auth_valid: Vec<Option<bool>>,
+    pub adc_auth_valid: Vec<Option<bool>>,
     pub selected_row: usize,
     pub selected_col: Column,
     pub should_quit: bool,
@@ -57,26 +69,27 @@ pub struct App {
     // Pending action that needs TUI suspended
     pub pending_action: PendingAction,
     pub quit_after_activate: bool,
+    // Async auth check state
+    auth_tx: mpsc::Sender<AuthResult>,
+    auth_rx: mpsc::Receiver<AuthResult>,
+    auth_generation: u64,
+    // Async project list fetch state
+    project_tx: mpsc::Sender<Vec<String>>,
+    project_rx: mpsc::Receiver<Vec<String>>,
+    pub fetched_projects: Vec<String>,
+    pub fetching_projects: bool,
+    pub sync_mode: SyncMode,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
         let store = Store::new()?;
-        let profiles_file = store.load_profiles()?;
-        let state = store.load_state()?;
+        let data = store.load_profiles()?;
 
-        let profile_names: Vec<String> = profiles_file.profiles.keys().cloned().collect();
-        let profiles: Vec<Profile> = profiles_file.profiles.values().cloned().collect();
-        let active_profile = state.active_profile;
-
-        let user_auth_valid: Vec<bool> = profiles
-            .iter()
-            .map(|p| gcloud::check_account_auth(&p.user_account))
-            .collect();
-        let adc_auth_valid: Vec<bool> = profiles
-            .iter()
-            .map(|p| gcloud::check_account_auth(&p.adc_account))
-            .collect();
+        let profile_names: Vec<String> = data.profiles.keys().cloned().collect();
+        let profiles: Vec<Profile> = data.profiles.values().cloned().collect();
+        let active_profile = data.active_profile;
+        let sync_mode = data.sync_mode;
 
         let selected_row = if let Some(ref active) = active_profile {
             profile_names
@@ -87,13 +100,16 @@ impl App {
             0
         };
 
-        Ok(Self {
+        let (auth_tx, auth_rx) = mpsc::channel();
+        let (project_tx, project_rx) = mpsc::channel();
+
+        let mut app = Self {
             store,
             profile_names,
             profiles,
             active_profile,
-            user_auth_valid,
-            adc_auth_valid,
+            user_auth_valid: Vec::new(),
+            adc_auth_valid: Vec::new(),
             selected_row,
             selected_col: Column::Both,
             should_quit: false,
@@ -114,38 +130,126 @@ impl App {
             suggestion_index: None,
             pending_action: PendingAction::None,
             quit_after_activate: false,
-        })
+            auth_tx,
+            auth_rx,
+            auth_generation: 0,
+            project_tx,
+            project_rx,
+            fetched_projects: Vec::new(),
+            fetching_projects: false,
+            sync_mode,
+        };
+
+        app.start_auth_checks();
+        Ok(app)
+    }
+
+    /// Spawn background threads to check auth for all unique accounts.
+    fn start_auth_checks(&mut self) {
+        self.auth_generation += 1;
+        let gen = self.auth_generation;
+        self.user_auth_valid = vec![None; self.profiles.len()];
+        self.adc_auth_valid = vec![None; self.profiles.len()];
+
+        // Deduplicate: group (profile_index, is_user) by account email
+        let mut account_targets: std::collections::HashMap<String, Vec<(usize, bool)>> =
+            std::collections::HashMap::new();
+        for (i, profile) in self.profiles.iter().enumerate() {
+            if !profile.user_account.is_empty() {
+                account_targets
+                    .entry(profile.user_account.clone())
+                    .or_default()
+                    .push((i, true));
+            }
+            if !profile.adc_account.is_empty() {
+                account_targets
+                    .entry(profile.adc_account.clone())
+                    .or_default()
+                    .push((i, false));
+            }
+        }
+
+        for (account, targets) in account_targets {
+            let tx = self.auth_tx.clone();
+            std::thread::spawn(move || {
+                let valid = gcloud::check_account_auth(&account);
+                for (idx, is_user) in targets {
+                    let _ = tx.send(AuthResult {
+                        generation: gen,
+                        profile_index: idx,
+                        is_user,
+                        valid,
+                    });
+                }
+            });
+        }
+    }
+
+    /// Drain completed auth results from background threads.
+    pub fn check_auth_results(&mut self) {
+        while let Ok(result) = self.auth_rx.try_recv() {
+            if result.generation != self.auth_generation {
+                continue;
+            }
+            if result.profile_index >= self.profiles.len() {
+                continue;
+            }
+            if result.is_user {
+                self.user_auth_valid[result.profile_index] = Some(result.valid);
+            } else {
+                self.adc_auth_valid[result.profile_index] = Some(result.valid);
+            }
+        }
+    }
+
+    /// Drain completed project list results from background thread.
+    pub fn check_project_results(&mut self) {
+        while let Ok(projects) = self.project_rx.try_recv() {
+            self.fetched_projects = projects;
+            self.fetching_projects = false;
+        }
+    }
+
+    /// Spawn a background thread to fetch projects for the given account.
+    fn start_project_fetch(&mut self, account: &str) {
+        if account.is_empty() {
+            self.fetched_projects.clear();
+            return;
+        }
+        self.fetching_projects = true;
+        self.fetched_projects.clear();
+        let account = account.to_string();
+        let tx = self.project_tx.clone();
+        std::thread::spawn(move || {
+            let projects = gcloud::list_projects_for_account(&account).unwrap_or_default();
+            let _ = tx.send(projects);
+        });
     }
 
     pub fn reload(&mut self) -> Result<()> {
-        let profiles_file = self.store.load_profiles()?;
-        let state = self.store.load_state()?;
-        self.profile_names = profiles_file.profiles.keys().cloned().collect();
-        self.profiles = profiles_file.profiles.values().cloned().collect();
-        self.active_profile = state.active_profile;
-        self.user_auth_valid = self
-            .profiles
-            .iter()
-            .map(|p| gcloud::check_account_auth(&p.user_account))
-            .collect();
-        self.adc_auth_valid = self
-            .profiles
-            .iter()
-            .map(|p| gcloud::check_account_auth(&p.adc_account))
-            .collect();
+        let data = self.store.load_profiles()?;
+        self.profile_names = data.profiles.keys().cloned().collect();
+        self.profiles = data.profiles.values().cloned().collect();
+        self.active_profile = data.active_profile;
         if self.selected_row >= self.profile_names.len() {
             self.selected_row = self.profile_names.len().saturating_sub(1);
         }
+        self.start_auth_checks();
         Ok(())
     }
 
     pub fn handle_event(&mut self) -> Result<bool> {
-        if let Event::Key(key) = event::read()? {
-            match self.input_mode {
-                InputMode::Normal => self.handle_normal_key(key)?,
-                InputMode::ConfirmDelete => self.handle_confirm_delete(key)?,
-                InputMode::EditAccount | InputMode::EditProject => self.handle_edit_key(key)?,
-                _ => self.handle_input_key(key)?,
+        // Use poll with timeout so the UI can refresh for async auth results
+        if event::poll(Duration::from_millis(200))? {
+            if let Event::Key(key) = event::read()? {
+                match self.input_mode {
+                    InputMode::Normal => self.handle_normal_key(key)?,
+                    InputMode::ConfirmDelete => self.handle_confirm_delete(key)?,
+                    InputMode::EditAccount | InputMode::EditProject => {
+                        self.handle_edit_key(key)?
+                    }
+                    _ => self.handle_input_key(key)?,
+                }
             }
         }
         Ok(self.should_quit)
@@ -160,6 +264,7 @@ impl App {
                 if !self.profile_names.is_empty() && self.selected_row > 0 {
                     self.selected_row -= 1;
                 }
+                self.status_message = None;
             }
             KeyCode::Down => {
                 if !self.profile_names.is_empty()
@@ -167,6 +272,7 @@ impl App {
                 {
                     self.selected_row += 1;
                 }
+                self.status_message = None;
             }
             KeyCode::Left => {
                 self.selected_col = match self.selected_col {
@@ -174,6 +280,7 @@ impl App {
                     Column::User => Column::Both,
                     Column::Adc => Column::User,
                 };
+                self.status_message = None;
             }
             KeyCode::Right => {
                 self.selected_col = match self.selected_col {
@@ -181,6 +288,7 @@ impl App {
                     Column::User => Column::Adc,
                     Column::Adc => Column::Adc,
                 };
+                self.status_message = None;
             }
             KeyCode::Enter => {
                 if !self.profile_names.is_empty() {
@@ -239,6 +347,22 @@ impl App {
                     self.input_mode = InputMode::ConfirmDelete;
                 }
             }
+            KeyCode::Char('s') => {
+                self.sync_mode = match self.sync_mode {
+                    SyncMode::Strict => SyncMode::Add,
+                    SyncMode::Add => SyncMode::Off,
+                    SyncMode::Off => SyncMode::Strict,
+                };
+                let mut data = self.store.load_profiles()?;
+                data.sync_mode = self.sync_mode;
+                self.store.save_profiles(&data)?;
+                let label = match self.sync_mode {
+                    SyncMode::Strict => "strict",
+                    SyncMode::Add => "add",
+                    SyncMode::Off => "off",
+                };
+                self.status_message = Some(format!("Sync mode: {}", label));
+            }
             _ => {}
         }
         Ok(())
@@ -294,6 +418,13 @@ impl App {
                         // Save the profile
                         self.store
                             .add_profile(&self.new_profile_name, self.new_profile.clone())?;
+                        if matches!(self.sync_mode, SyncMode::Strict | SyncMode::Add) {
+                            let _ = gcloud::create_configuration(
+                                &self.new_profile_name,
+                                &self.new_profile.user_account,
+                                &self.new_profile.user_project,
+                            );
+                        }
                         self.status_message = Some(format!(
                             "Profile '{}' added.",
                             self.new_profile_name
@@ -321,6 +452,9 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let name = self.profile_names[self.selected_row].clone();
                 self.store.delete_profile(&name)?;
+                if self.sync_mode == SyncMode::Strict {
+                    let _ = gcloud::delete_configuration(&name);
+                }
                 self.status_message = Some(format!("Deleted profile '{}'.", name));
                 self.reload()?;
                 self.input_mode = InputMode::Normal;
@@ -387,6 +521,8 @@ impl App {
                 if self.input_mode == InputMode::EditAccount {
                     self.input_mode = InputMode::EditProject;
                     self.suggestion_index = None;
+                    let account = self.edit_account_buffer.trim().to_string();
+                    self.start_project_fetch(&account);
                     self.status_message = Some(
                         "Edit project: Tab save  \u{2193} suggestions  Enter save  Esc cancel"
                             .to_string(),
@@ -436,6 +572,9 @@ impl App {
 
     fn build_project_suggestions(&self) -> Vec<String> {
         let mut seen = std::collections::BTreeSet::new();
+        for project in &self.fetched_projects {
+            seen.insert(project.clone());
+        }
         for profile in &self.profiles {
             if !profile.user_project.is_empty() {
                 seen.insert(profile.user_project.clone());
@@ -470,8 +609,21 @@ impl App {
     }
 
     fn activate_selected(&mut self) -> Result<()> {
-        let user_valid = self.user_auth_valid.get(self.selected_row).copied().unwrap_or(false);
-        let adc_valid = self.adc_auth_valid.get(self.selected_row).copied().unwrap_or(false);
+        // If auth check is still pending, do a synchronous check now
+        let user_valid = match self.user_auth_valid.get(self.selected_row).copied() {
+            Some(Some(v)) => v,
+            _ => {
+                let account = &self.profiles[self.selected_row].user_account;
+                gcloud::check_account_auth(account)
+            }
+        };
+        let adc_valid = match self.adc_auth_valid.get(self.selected_row).copied() {
+            Some(Some(v)) => v,
+            _ => {
+                let account = &self.profiles[self.selected_row].adc_account;
+                gcloud::check_account_auth(account)
+            }
+        };
 
         // Defer to main loop if interactive reauth is needed
         let needs_reauth = match self.selected_col {
@@ -514,9 +666,9 @@ impl App {
         }
 
         self.active_profile = Some(name.clone());
-        self.store.save_state(&StateFile {
-            active_profile: Some(name.clone()),
-        })?;
+        let mut data = self.store.load_profiles()?;
+        data.active_profile = Some(name.clone());
+        self.store.save_profiles(&data)?;
 
         Ok(())
     }
@@ -527,7 +679,14 @@ impl App {
         let profile = self.profiles[self.selected_row].clone();
 
         match self.selected_col {
-            Column::User | Column::Both => {
+            Column::Both => {
+                gcloud::reauth_user(&profile.user_account)?;
+                gcloud::activate_user(&name, &profile.user_account, &profile.user_project)?;
+                gcloud::reauth_adc(&self.store, &name, &profile.adc_quota_project)?;
+                self.status_message =
+                    Some(format!("Re-authenticated user and ADC for '{}'.", name));
+            }
+            Column::User => {
                 gcloud::reauth_user(&profile.user_account)?;
                 gcloud::activate_user(&name, &profile.user_account, &profile.user_project)?;
                 self.status_message =

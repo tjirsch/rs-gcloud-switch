@@ -17,41 +17,115 @@ fn gcloud_config_dir() -> Result<PathBuf> {
     Ok(home.join(".config").join("gcloud"))
 }
 
+/// Read gcloud's currently active configuration name.
+pub fn read_active_config() -> Result<Option<String>> {
+    let path = gcloud_config_dir()?.join("active_config");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let name = fs::read_to_string(&path)?.trim().to_string();
+    if name.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(name))
+    }
+}
+
+/// Create a gcloud configuration without activating it.
+pub fn create_configuration(name: &str, account: &str, project: &str) -> Result<()> {
+    // Create config (ignore error if it already exists)
+    let _ = Command::new("gcloud")
+        .args(["config", "configurations", "create", name, "--no-activate"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if !account.is_empty() {
+        let _ = Command::new("gcloud")
+            .args(["config", "set", "account", account, &format!("--configuration={}", name)])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    if !project.is_empty() {
+        let _ = Command::new("gcloud")
+            .args(["config", "set", "project", project, &format!("--configuration={}", name)])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    Ok(())
+}
+
+/// Delete a gcloud configuration.
+pub fn delete_configuration(name: &str) -> Result<()> {
+    let _ = Command::new("gcloud")
+        .args(["config", "configurations", "delete", name, "--quiet"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    Ok(())
+}
+
 fn configurations_dir() -> Result<PathBuf> {
     let dir = gcloud_config_dir()?.join("configurations");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
-/// Write a gcloud configuration file for the given profile.
-fn write_gcloud_configuration(profile_name: &str, account: &str, project: &str) -> Result<()> {
-    let dir = configurations_dir()?;
-    let config_path = dir.join(format!("config_{}", profile_name));
+/// Activate a profile's user credentials via gcloud CLI.
+pub fn activate_user(profile_name: &str, account: &str, project: &str) -> Result<()> {
+    // Create configuration if it doesn't exist (ignore error if already exists)
+    let _ = Command::new("gcloud")
+        .args(["config", "configurations", "create", profile_name, "--no-activate"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 
-    let content = format!(
-        "[core]\naccount = {}\nproject = {}\n",
-        account, project
-    );
-    fs::write(&config_path, content)
-        .with_context(|| format!("Failed to write gcloud config at {}", config_path.display()))?;
+    // Activate the configuration
+    let status = Command::new("gcloud")
+        .args(["config", "configurations", "activate", profile_name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to activate gcloud configuration")?;
+    if !status.success() {
+        anyhow::bail!("gcloud config configurations activate failed for '{}'", profile_name);
+    }
+
+    // Set account and project on the active configuration
+    if !account.is_empty() {
+        let status = Command::new("gcloud")
+            .args(["config", "set", "account", account])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .context("Failed to set gcloud account")?;
+        if !status.success() {
+            anyhow::bail!("gcloud config set account failed");
+        }
+    }
+
+    if !project.is_empty() {
+        let status = Command::new("gcloud")
+            .args(["config", "set", "project", project])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .context("Failed to set gcloud project")?;
+        if !status.success() {
+            anyhow::bail!("gcloud config set project failed");
+        }
+    }
+
     Ok(())
 }
 
-/// Set the active gcloud configuration.
-fn set_active_config(profile_name: &str) -> Result<()> {
-    let config_dir = gcloud_config_dir()?;
-    let active_config_path = config_dir.join("active_config");
-    fs::write(&active_config_path, profile_name).with_context(|| {
-        format!(
-            "Failed to write active_config at {}",
-            active_config_path.display()
-        )
-    })?;
-    Ok(())
-}
-
-/// Copy a stored ADC JSON file to gcloud's application_default_credentials.json.
-fn copy_adc_to_gcloud(store: &Store, profile_name: &str) -> Result<()> {
+/// Activate a profile's ADC credentials.
+/// No gcloud CLI equivalent exists, so this copies the stored ADC JSON directly.
+pub fn activate_adc(store: &Store, profile_name: &str) -> Result<()> {
     let src = store.adc_path(profile_name);
     if !src.exists() {
         anyhow::bail!(
@@ -69,18 +143,6 @@ fn copy_adc_to_gcloud(store: &Store, profile_name: &str) -> Result<()> {
         )
     })?;
     Ok(())
-}
-
-/// Activate a profile's user credentials (gcloud config).
-pub fn activate_user(profile_name: &str, account: &str, project: &str) -> Result<()> {
-    write_gcloud_configuration(profile_name, account, project)?;
-    set_active_config(profile_name)?;
-    Ok(())
-}
-
-/// Activate a profile's ADC credentials.
-pub fn activate_adc(store: &Store, profile_name: &str) -> Result<()> {
-    copy_adc_to_gcloud(store, profile_name)
 }
 
 /// Activate both user and ADC credentials for a profile.
@@ -153,58 +215,27 @@ pub fn reauth_adc(store: &Store, profile_name: &str, quota_project: &str) -> Res
     Ok(())
 }
 
-/// Try to resolve the account email from an ADC JSON file by calling Google's userinfo endpoint.
-pub async fn resolve_adc_account(adc_json: &serde_json::Value) -> Result<Option<String>> {
-    // Extract the client_id, client_secret, and refresh_token
-    let client_id = adc_json
-        .get("client_id")
-        .and_then(|v| v.as_str())
-        .context("ADC JSON missing client_id")?;
-    let client_secret = adc_json
-        .get("client_secret")
-        .and_then(|v| v.as_str())
-        .context("ADC JSON missing client_secret")?;
-    let refresh_token = adc_json
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .context("ADC JSON missing refresh_token")?;
-
-    // Exchange refresh token for access token
-    let client = reqwest::Client::new();
-    let token_resp = client
-        .post("https://oauth2.googleapis.com/token")
-        .form(&[
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("refresh_token", refresh_token),
-            ("grant_type", "refresh_token"),
+/// List projects accessible by a given account via `gcloud projects list`.
+pub fn list_projects_for_account(account: &str) -> Result<Vec<String>> {
+    let output = Command::new("gcloud")
+        .args([
+            "projects",
+            "list",
+            &format!("--account={}", account),
+            "--format=value(projectId)",
+            "--sort-by=projectId",
         ])
-        .send()
-        .await?;
-
-    if !token_resp.status().is_success() {
-        return Ok(None);
+        .output()
+        .context("Failed to run gcloud projects list")?;
+    if !output.status.success() {
+        return Ok(Vec::new());
     }
-
-    let token_json: serde_json::Value = token_resp.json().await?;
-    let access_token = match token_json.get("access_token").and_then(|v| v.as_str()) {
-        Some(t) => t.to_string(),
-        None => return Ok(None),
-    };
-
-    // Call userinfo endpoint
-    let userinfo_resp = client
-        .get("https://www.googleapis.com/oauth2/v2/userinfo")
-        .bearer_auth(&access_token)
-        .send()
-        .await?;
-
-    if !userinfo_resp.status().is_success() {
-        return Ok(None);
-    }
-
-    let userinfo: serde_json::Value = userinfo_resp.json().await?;
-    Ok(userinfo.get("email").and_then(|v| v.as_str()).map(String::from))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// Read credentials for an account from gcloud's credentials.db.
@@ -264,8 +295,7 @@ pub fn validate_token_blocking(credentials: &serde_json::Value) -> Result<bool> 
 
 /// Check whether an account's gcloud credentials are valid.
 /// Returns false on any error (missing from DB, invalid token, network issue).
-/// Runs the blocking HTTP call on a dedicated thread to avoid panicking
-/// when called from within a tokio runtime.
+/// Runs the blocking HTTP call on a dedicated thread to keep the main thread free.
 pub fn check_account_auth(account: &str) -> bool {
     let creds = match read_gcloud_credentials(account) {
         Ok(Some(c)) => c,
