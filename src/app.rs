@@ -302,12 +302,12 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('a') => {
                 if !self.profile_names.is_empty() {
                     self.pending_action = PendingAction::Reauth;
                 }
             }
-            KeyCode::Char('a') | KeyCode::Char('n') => {
+            KeyCode::Char('n') => {
                 self.input_mode = InputMode::AddProfileName;
                 self.input_buffer.clear();
                 self.status_message = Some("Enter profile name:".to_string());
@@ -333,10 +333,7 @@ impl App {
                     self.input_mode = InputMode::EditAccount;
                     self.suggestions.clear();
                     self.suggestion_index = None;
-                    self.status_message = Some(
-                        "Edit: Tab next field  \u{2193} suggestions  Enter save  Esc cancel"
-                            .to_string(),
-                    );
+                    self.status_message = None;
                 }
             }
             KeyCode::Char('d') => {
@@ -362,6 +359,41 @@ impl App {
                     SyncMode::Off => "off",
                 };
                 self.status_message = Some(format!("Sync mode: {}", label));
+            }
+            KeyCode::Char('i') => {
+                let configs = gcloud::discover_existing_configs()?;
+                if configs.is_empty() {
+                    self.status_message = Some("No gcloud configurations found.".to_string());
+                } else {
+                    let mut data = self.store.load_profiles()?;
+                    let mut count = 0;
+                    for (name, account, project) in &configs {
+                        if !data.profiles.contains_key(name) {
+                            let profile = Profile {
+                                user_account: account.clone(),
+                                user_project: project.clone(),
+                                adc_account: account.clone(),
+                                adc_quota_project: project.clone(),
+                            };
+                            data.profiles.insert(name.clone(), profile);
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        if let Ok(Some(active)) = gcloud::read_active_config() {
+                            if data.profiles.contains_key(&active) {
+                                data.active_profile = Some(active);
+                            }
+                        }
+                        self.store.save_profiles(&data)?;
+                        self.reload()?;
+                        self.status_message =
+                            Some(format!("Imported {} profile(s).", count));
+                    } else {
+                        self.status_message =
+                            Some("No new configurations to import.".to_string());
+                    }
+                }
             }
             _ => {}
         }
@@ -523,10 +555,6 @@ impl App {
                     self.suggestion_index = None;
                     let account = self.edit_account_buffer.trim().to_string();
                     self.start_project_fetch(&account);
-                    self.status_message = Some(
-                        "Edit project: Tab save  \u{2193} suggestions  Enter save  Esc cancel"
-                            .to_string(),
-                    );
                 } else {
                     self.save_edit()?;
                 }
