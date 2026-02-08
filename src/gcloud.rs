@@ -215,6 +215,25 @@ pub fn reauth_adc(store: &Store, profile_name: &str, quota_project: &str) -> Res
     Ok(())
 }
 
+/// Set the ADC quota project via `gcloud auth application-default set-quota-project`.
+pub fn set_adc_quota_project(quota_project: &str) -> Result<()> {
+    let status = Command::new("gcloud")
+        .args([
+            "auth",
+            "application-default",
+            "set-quota-project",
+            quota_project,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to run gcloud auth application-default set-quota-project")?;
+    if !status.success() {
+        anyhow::bail!("gcloud auth application-default set-quota-project failed");
+    }
+    Ok(())
+}
+
 /// List projects accessible by a given account via `gcloud projects list`.
 pub fn list_projects_for_account(account: &str) -> Result<Vec<String>> {
     let output = Command::new("gcloud")
@@ -349,9 +368,7 @@ pub fn discover_existing_configs() -> Result<Vec<(String, String, String)>> {
                             project = val.trim().to_string();
                         }
                     }
-                    if !account.is_empty() {
-                        results.push((name.to_string(), account, project));
-                    }
+                    results.push((name.to_string(), account, project));
                 }
             }
         }

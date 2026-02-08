@@ -616,7 +616,8 @@ impl App {
 
     fn save_edit(&mut self) -> Result<()> {
         let name = self.profile_names[self.selected_row].clone();
-        let mut profile = self.profiles[self.selected_row].clone();
+        let old_profile = self.profiles[self.selected_row].clone();
+        let mut profile = old_profile.clone();
         match self.edit_col {
             Column::User => {
                 profile.user_account = self.edit_account_buffer.trim().to_string();
@@ -628,7 +629,44 @@ impl App {
             }
             _ => {}
         }
-        self.store.add_profile(&name, profile)?;
+        self.store.add_profile(&name, profile.clone())?;
+
+        // If ADC account changed, clear auth status (needs re-check)
+        if self.edit_col == Column::Adc && profile.adc_account != old_profile.adc_account {
+            if let Some(slot) = self.adc_auth_valid.get_mut(self.selected_row) {
+                *slot = None;
+            }
+        }
+
+        // If ADC quota project changed, apply it via gcloud
+        if self.edit_col == Column::Adc
+            && profile.adc_quota_project != old_profile.adc_quota_project
+            && !profile.adc_quota_project.is_empty()
+        {
+            match gcloud::set_adc_quota_project(&profile.adc_quota_project) {
+                Ok(()) => {
+                    self.reload()?;
+                    self.input_mode = InputMode::Normal;
+                    self.suggestion_index = None;
+                    self.status_message = Some(format!(
+                        "Profile '{}' updated. ADC quota project set to '{}'.",
+                        name, profile.adc_quota_project
+                    ));
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.reload()?;
+                    self.input_mode = InputMode::Normal;
+                    self.suggestion_index = None;
+                    self.status_message = Some(format!(
+                        "Profile '{}' updated. Failed to set quota project: {}",
+                        name, e
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+
         self.reload()?;
         self.input_mode = InputMode::Normal;
         self.suggestion_index = None;

@@ -93,7 +93,7 @@ fn table_content_width(app: &App) -> usize {
 
 fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
     if app.profile_names.is_empty() {
-        let empty = Paragraph::new("  No profiles. Press 'a' to add one.")
+        let empty = Paragraph::new("  No profiles. Press 'n' to add one.")
             .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, area);
         return;
@@ -130,7 +130,6 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
 
             let is_editing = i == app.selected_row
                 && matches!(app.input_mode, InputMode::EditAccount | InputMode::EditProject);
-            let edit_bg = Color::Indexed(17); // dark blue edit background
 
             let user_auth_status = app.user_auth_valid.get(i).copied().flatten();
             let user_lock = match user_auth_status {
@@ -158,38 +157,37 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
 
             let light_grey       = Color::Indexed(255);
             let highlight_bg     = Color::Blue ;
-            let col_highlight_bg = Color::LightBlue;
+            let col_highlight_bg = Color::Indexed(75); // lighter blue for selected column
+            let edit_bg          = Color::Indexed(255); // Light Grey edit background
 
             let base_style = if is_selected {
                 Style::default().bg(highlight_bg).fg(Color::White)
             } else if is_active {
-                Style::default().bg(light_grey).fg(Color::Black).add_modifier(Modifier::BOLD)
+                Style::default().bg(light_grey).fg(Color::Green).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().bg(light_grey).fg(Color::Black)
             };
 
             let col_style = |col: Column, editing: bool| -> Style {
                 if editing {
-                    Style::default().bg(edit_bg).fg(Color::White)
+                    Style::default().bg(edit_bg).fg(Color::Black)
                 } else if is_selected && app.selected_col == col {
-                    Style::default().bg(col_highlight_bg).fg(Color::White)
+                    Style::default().bg(col_highlight_bg).fg(Color::White).add_modifier(Modifier::BOLD)
                 } else {
                     base_style
                 }
             };
 
             let profile_style = base_style;
-            let user_style = col_style(Column::User, is_editing && app.edit_col == Column::User);
-            let adc_style  = col_style(Column::Adc,  is_editing && app.edit_col == Column::Adc);
-            let row_style  = base_style;
+            let user_style    = col_style(Column::User, is_editing && app.edit_col == Column::User);
+            let adc_style     = col_style(Column::Adc,  is_editing && app.edit_col == Column::Adc);
 
             Row::new(vec![
                 Cell::from(profile_name).style(profile_style),
-                Cell::from(user_info   ).style(user_style),
-                Cell::from(adc_info    ).style(adc_style),
+                Cell::from(user_info   ).style(user_style   ),
+                Cell::from(adc_info    ).style(adc_style    ),
             ])
-            .height(2)
-            .style(row_style)
+            .height(2).style(base_style)
         });
 
     // Calculate max content width per column
@@ -232,7 +230,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
 
         let col_offset: usize = match app.edit_col {
             Column::User => col_px[0],
-            Column::Adc => col_px[0] + col_px[1],
+            Column::Adc  => col_px[0] + col_px[1],
             Column::Both => col_px[0],
         };
 
@@ -318,10 +316,15 @@ fn title_prefix() -> Vec<Span<'static>> {
 
 fn build_normal_help_spans(app: &App) -> Vec<Span<'static>> {
     let mut s = title_prefix();
-    s.extend(help_key("row:", "\u{2191}\u{2193}"));
-    s.extend(help_key("col:", "\u{2190}\u{2192}"));
-    s.push(Span::styled("activate all/col:", Style::default().fg(Color::DarkGray)));
-    s.push(Span::styled("\u{21b5}  ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+    s.extend(help_key("row:", "\u{2191}\u{2193} "));
+    s.extend(help_key("col:", "\u{2190}\u{2192} "));
+    let activate_label = match app.selected_col {
+        Column::Both => "activate both:",
+        Column::User => "activate user:",
+        Column::Adc  => "activate adc: ",
+    };
+    s.push(Span::styled(activate_label.to_string(), Style::default().fg(Color::DarkGray)));
+    s.push(Span::styled("\u{21b5} ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
     s.extend(help_key("a", "uthenticate "));
     s.extend(help_key("e", "dit "));
     s.extend(help_key("n", "ew "));
