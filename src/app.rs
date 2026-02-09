@@ -257,7 +257,7 @@ impl App {
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Esc => {
                 self.should_quit = true;
             }
             KeyCode::Up => {
@@ -447,16 +447,25 @@ impl App {
                     }
                     InputMode::AddProfileAdcQuotaProject => {
                         self.new_profile.adc_quota_project = value;
-                        // Save the profile
-                        self.store
-                            .add_profile(&self.new_profile_name, self.new_profile.clone())?;
+                        // Create gcloud configuration first (if sync requires it)
                         if matches!(self.sync_mode, SyncMode::Strict | SyncMode::Add) {
-                            let _ = gcloud::create_configuration(
+                            if let Err(e) = gcloud::create_configuration(
                                 &self.new_profile_name,
                                 &self.new_profile.user_account,
                                 &self.new_profile.user_project,
-                            );
+                            ) {
+                                self.status_message = Some(format!(
+                                    "Failed to create gcloud config: {}",
+                                    e
+                                ));
+                                self.input_mode = InputMode::Normal;
+                                self.input_buffer.clear();
+                                return Ok(());
+                            }
                         }
+                        // Save the profile
+                        self.store
+                            .add_profile(&self.new_profile_name, self.new_profile.clone())?;
                         self.status_message = Some(format!(
                             "Profile '{}' added.",
                             self.new_profile_name

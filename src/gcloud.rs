@@ -33,27 +33,45 @@ pub fn read_active_config() -> Result<Option<String>> {
 
 /// Create a gcloud configuration without activating it.
 pub fn create_configuration(name: &str, account: &str, project: &str) -> Result<()> {
-    // Create config (ignore error if it already exists)
-    let _ = Command::new("gcloud")
+    // Create config — ignore failure if it already exists
+    let status = Command::new("gcloud")
         .args(["config", "configurations", "create", name, "--no-activate"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .context("Failed to run gcloud (is it installed and in PATH?)")?;
+
+    // Verify the configuration file actually exists (covers both fresh-create and already-exists)
+    let config_file = configurations_dir()?.join(format!("config_{}", name));
+    if !config_file.exists() && !status.success() {
+        anyhow::bail!(
+            "Failed to create gcloud configuration '{}'. Check that gcloud CLI is working.",
+            name
+        );
+    }
 
     if !account.is_empty() {
-        let _ = Command::new("gcloud")
+        let status = Command::new("gcloud")
             .args(["config", "set", "account", account, &format!("--configuration={}", name)])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .status()
+            .context("Failed to run gcloud config set account")?;
+        if !status.success() {
+            anyhow::bail!("Failed to set account on gcloud configuration '{}'", name);
+        }
     }
 
     if !project.is_empty() {
-        let _ = Command::new("gcloud")
+        let status = Command::new("gcloud")
             .args(["config", "set", "project", project, &format!("--configuration={}", name)])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .status()
+            .context("Failed to run gcloud config set project")?;
+        if !status.success() {
+            anyhow::bail!("Failed to set project on gcloud configuration '{}'", name);
+        }
     }
 
     Ok(())

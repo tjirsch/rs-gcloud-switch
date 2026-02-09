@@ -75,10 +75,11 @@ fn main() -> Result<()> {
                 adc_account: adc_account.unwrap_or_else(|| account.clone()),
                 adc_quota_project: adc_quota_project.unwrap_or_else(|| project.clone()),
             };
-            store.add_profile(&name, profile.clone())?;
+            // Create gcloud configuration first so the profile won't be orphaned
             if matches!(data.sync_mode, SyncMode::Strict | SyncMode::Add) {
                 gcloud::create_configuration(&name, &profile.user_account, &profile.user_project)?;
             }
+            store.add_profile(&name, profile.clone())?;
             println!("Profile '{}' added.", name);
         }
         Some(Commands::List) => {

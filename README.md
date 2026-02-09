@@ -50,11 +50,11 @@ Opens an interactive table of profiles. Use the keyboard to navigate and activat
 | `Right` | Move column right (User -> ADC) |
 | `Enter` | Activate selected profile and quit |
 | `Alt+Enter` | Activate selected profile and stay |
-| `r` | Re-authenticate selected profile |
+| `a` | Re-authenticate selected profile |
 | `e` | Edit selected profile in-place |
-| `a` / `n` | Add a new profile |
+| `n` | Add a new profile |
 | `d` | Delete selected profile |
-| `q` / `Esc` | Quit |
+| `Esc` | Quit |
 
 #### Edit Mode
 
@@ -132,7 +132,7 @@ When activating a profile with an invalid token, gcloud-switch automatically run
 - `gcloud auth login --account=<email>` for user credentials
 - `gcloud auth application-default login` for ADC credentials
 
-You can also manually trigger re-auth with the `r` key.
+You can also manually trigger re-auth with the `a` key.
 
 ## File Locations
 
