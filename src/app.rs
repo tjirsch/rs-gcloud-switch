@@ -64,6 +64,7 @@ pub struct App {
     pub edit_col: Column,
     pub edit_account_buffer: String,
     pub edit_project_buffer: String,
+    pub edit_cursor_pos: usize,
     pub suggestions: Vec<String>,
     pub suggestion_index: Option<usize>,
     // Pending action that needs TUI suspended
@@ -126,6 +127,7 @@ impl App {
             edit_col: Column::User,
             edit_account_buffer: String::new(),
             edit_project_buffer: String::new(),
+            edit_cursor_pos: 0,
             suggestions: Vec::new(),
             suggestion_index: None,
             pending_action: PendingAction::None,
@@ -331,6 +333,7 @@ impl App {
                         _ => unreachable!(),
                     };
                     self.input_mode = InputMode::EditAccount;
+                    self.edit_cursor_pos = self.edit_account_buffer.len();
                     self.suggestions.clear();
                     self.suggestion_index = None;
                     self.status_message = None;
@@ -481,7 +484,13 @@ impl App {
                 self.input_buffer.pop();
             }
             KeyCode::Char(c) => {
-                self.input_buffer.push(c);
+                if self.input_mode == InputMode::AddProfileName {
+                    if c.is_ascii_alphanumeric() || c == '-' {
+                        self.input_buffer.push(c);
+                    }
+                } else {
+                    self.input_buffer.push(c);
+                }
             }
             _ => {}
         }
@@ -546,11 +555,13 @@ impl App {
                     // Pick suggestion into buffer
                     if let Some(suggestion) = self.suggestions.get(idx) {
                         let suggestion = suggestion.clone();
+                        let len = suggestion.len();
                         if self.input_mode == InputMode::EditAccount {
                             self.edit_account_buffer = suggestion;
                         } else {
                             self.edit_project_buffer = suggestion;
                         }
+                        self.edit_cursor_pos = len;
                     }
                     self.suggestion_index = None;
                 } else {
@@ -561,6 +572,7 @@ impl App {
             KeyCode::Tab => {
                 if self.input_mode == InputMode::EditAccount {
                     self.input_mode = InputMode::EditProject;
+                    self.edit_cursor_pos = self.edit_project_buffer.len();
                     self.suggestion_index = None;
                     let account = self.edit_account_buffer.trim().to_string();
                     self.start_project_fetch(&account);
@@ -568,20 +580,65 @@ impl App {
                     self.save_edit()?;
                 }
             }
-            KeyCode::Backspace => {
-                if self.input_mode == InputMode::EditAccount {
-                    self.edit_account_buffer.pop();
+            KeyCode::Left => {
+                if self.edit_cursor_pos > 0 {
+                    self.edit_cursor_pos -= 1;
+                }
+            }
+            KeyCode::Right => {
+                let buf_len = if self.input_mode == InputMode::EditAccount {
+                    self.edit_account_buffer.len()
                 } else {
-                    self.edit_project_buffer.pop();
+                    self.edit_project_buffer.len()
+                };
+                if self.edit_cursor_pos < buf_len {
+                    self.edit_cursor_pos += 1;
+                }
+            }
+            KeyCode::Home => {
+                self.edit_cursor_pos = 0;
+            }
+            KeyCode::End => {
+                let buf_len = if self.input_mode == InputMode::EditAccount {
+                    self.edit_account_buffer.len()
+                } else {
+                    self.edit_project_buffer.len()
+                };
+                self.edit_cursor_pos = buf_len;
+            }
+            KeyCode::Backspace => {
+                if self.edit_cursor_pos > 0 {
+                    if self.input_mode == InputMode::EditAccount {
+                        self.edit_account_buffer.remove(self.edit_cursor_pos - 1);
+                    } else {
+                        self.edit_project_buffer.remove(self.edit_cursor_pos - 1);
+                    }
+                    self.edit_cursor_pos -= 1;
+                }
+                self.suggestion_index = None;
+            }
+            KeyCode::Delete => {
+                let buf_len = if self.input_mode == InputMode::EditAccount {
+                    self.edit_account_buffer.len()
+                } else {
+                    self.edit_project_buffer.len()
+                };
+                if self.edit_cursor_pos < buf_len {
+                    if self.input_mode == InputMode::EditAccount {
+                        self.edit_account_buffer.remove(self.edit_cursor_pos);
+                    } else {
+                        self.edit_project_buffer.remove(self.edit_cursor_pos);
+                    }
                 }
                 self.suggestion_index = None;
             }
             KeyCode::Char(c) => {
                 if self.input_mode == InputMode::EditAccount {
-                    self.edit_account_buffer.push(c);
+                    self.edit_account_buffer.insert(self.edit_cursor_pos, c);
                 } else {
-                    self.edit_project_buffer.push(c);
+                    self.edit_project_buffer.insert(self.edit_cursor_pos, c);
                 }
+                self.edit_cursor_pos += 1;
                 self.suggestion_index = None;
             }
             _ => {}

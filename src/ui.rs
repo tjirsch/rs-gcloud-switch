@@ -234,13 +234,7 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
             Column::Both => col_px[0],
         };
 
-        let buf_len = if app.input_mode == InputMode::EditAccount {
-            app.edit_account_buffer.len()
-        } else {
-            app.edit_project_buffer.len()
-        };
-
-        let cursor_x = area.x + col_offset as u16 + buf_len as u16;
+        let cursor_x = area.x + col_offset as u16 + app.edit_cursor_pos as u16;
         let cursor_y = area.y
             + 2  // header height
             + (app.selected_row as u16) * 2
@@ -316,15 +310,9 @@ fn title_prefix() -> Vec<Span<'static>> {
 
 fn build_normal_help_spans(app: &App) -> Vec<Span<'static>> {
     let mut s = title_prefix();
-    s.extend(help_key("row:", "\u{2191}\u{2193} "));
-    s.extend(help_key("col:", "\u{2190}\u{2192} "));
-    let activate_label = match app.selected_col {
-        Column::Both => "activate both:",
-        Column::User => "activate user:",
-        Column::Adc  => "activate adc: ",
-    };
-    s.push(Span::styled(activate_label.to_string(), Style::default().fg(Color::DarkGray)));
-    s.push(Span::styled("\u{21b5} ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+    s.extend(help_key("\u{2191}\u{2193}", " row "));
+    s.extend(help_key("\u{2190}\u{2192}", " col "));
+    s.extend(help_key("\u{21b5}", " activate "));
     s.extend(help_key("a", "uthenticate "));
     s.extend(help_key("e", "dit "));
     s.extend(help_key("n", "ew "));
