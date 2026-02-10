@@ -225,8 +225,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_rows = area.height.saturating_sub(header_height) / row_height;
     let total_rows = app.profile_names.len();
     if total_rows as u16 > visible_rows {
-        let mut scrollbar_state = ScrollbarState::new(total_rows.saturating_sub(visible_rows as usize))
-            .position(app.selected_row.min(total_rows.saturating_sub(visible_rows as usize)));
+        let max_offset = total_rows.saturating_sub(visible_rows as usize);
+        let mut scrollbar_state = ScrollbarState::new(max_offset)
+            .position(app.table_state.offset().min(max_offset));
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .style(Style::default().fg(Color::DarkGray));
         frame.render_stateful_widget(

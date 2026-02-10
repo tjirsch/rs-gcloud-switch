@@ -3,6 +3,7 @@ name = "gcloud-switch"
 version = "0.9.1"
 edition = "2021"
 description = "TUI Google Cloud profile switcher"
+license = "MIT"
 
 [dependencies]
 anyhow = "1"
