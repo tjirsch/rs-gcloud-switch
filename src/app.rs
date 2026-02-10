@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::widgets::TableState;
 
 use crate::gcloud;
 use crate::profile::{Profile, SyncMode};
@@ -80,6 +81,7 @@ pub struct App {
     pub fetched_projects: Vec<String>,
     pub fetching_projects: bool,
     pub sync_mode: SyncMode,
+    pub table_state: TableState,
 }
 
 impl App {
@@ -140,6 +142,7 @@ impl App {
             fetched_projects: Vec::new(),
             fetching_projects: false,
             sync_mode,
+            table_state: TableState::default().with_selected(Some(selected_row)),
         };
 
         app.start_auth_checks();
@@ -236,6 +239,7 @@ impl App {
         if self.selected_row >= self.profile_names.len() {
             self.selected_row = self.profile_names.len().saturating_sub(1);
         }
+        self.table_state.select(Some(self.selected_row));
         self.start_auth_checks();
         Ok(())
     }
@@ -265,6 +269,7 @@ impl App {
             KeyCode::Up => {
                 if !self.profile_names.is_empty() && self.selected_row > 0 {
                     self.selected_row -= 1;
+                    self.table_state.select(Some(self.selected_row));
                 }
                 self.status_message = None;
             }
@@ -273,6 +278,7 @@ impl App {
                     && self.selected_row < self.profile_names.len() - 1
                 {
                     self.selected_row += 1;
+                    self.table_state.select(Some(self.selected_row));
                 }
                 self.status_message = None;
             }
@@ -333,7 +339,7 @@ impl App {
                         _ => unreachable!(),
                     };
                     self.input_mode = InputMode::EditAccount;
-                    self.edit_cursor_pos = self.edit_account_buffer.len();
+                    self.edit_cursor_pos = self.edit_account_buffer.chars().count();
                     self.suggestions.clear();
                     self.suggestion_index = None;
                     self.status_message = None;
@@ -555,13 +561,13 @@ impl App {
                     // Pick suggestion into buffer
                     if let Some(suggestion) = self.suggestions.get(idx) {
                         let suggestion = suggestion.clone();
-                        let len = suggestion.len();
+                        let char_count = suggestion.chars().count();
                         if self.input_mode == InputMode::EditAccount {
                             self.edit_account_buffer = suggestion;
                         } else {
                             self.edit_project_buffer = suggestion;
                         }
-                        self.edit_cursor_pos = len;
+                        self.edit_cursor_pos = char_count;
                     }
                     self.suggestion_index = None;
                 } else {
@@ -572,7 +578,7 @@ impl App {
             KeyCode::Tab => {
                 if self.input_mode == InputMode::EditAccount {
                     self.input_mode = InputMode::EditProject;
-                    self.edit_cursor_pos = self.edit_project_buffer.len();
+                    self.edit_cursor_pos = self.edit_project_buffer.chars().count();
                     self.suggestion_index = None;
                     let account = self.edit_account_buffer.trim().to_string();
                     self.start_project_fetch(&account);
@@ -586,12 +592,12 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                let buf_len = if self.input_mode == InputMode::EditAccount {
-                    self.edit_account_buffer.len()
+                let buf = if self.input_mode == InputMode::EditAccount {
+                    &self.edit_account_buffer
                 } else {
-                    self.edit_project_buffer.len()
+                    &self.edit_project_buffer
                 };
-                if self.edit_cursor_pos < buf_len {
+                if self.edit_cursor_pos < buf.chars().count() {
                     self.edit_cursor_pos += 1;
                 }
             }
@@ -599,46 +605,69 @@ impl App {
                 self.edit_cursor_pos = 0;
             }
             KeyCode::End => {
-                let buf_len = if self.input_mode == InputMode::EditAccount {
-                    self.edit_account_buffer.len()
+                let buf = if self.input_mode == InputMode::EditAccount {
+                    &self.edit_account_buffer
                 } else {
-                    self.edit_project_buffer.len()
+                    &self.edit_project_buffer
                 };
-                self.edit_cursor_pos = buf_len;
+                self.edit_cursor_pos = buf.chars().count();
             }
             KeyCode::Backspace => {
                 if self.edit_cursor_pos > 0 {
-                    if self.input_mode == InputMode::EditAccount {
-                        self.edit_account_buffer.remove(self.edit_cursor_pos - 1);
+                    let buf = if self.input_mode == InputMode::EditAccount {
+                        &mut self.edit_account_buffer
                     } else {
-                        self.edit_project_buffer.remove(self.edit_cursor_pos - 1);
-                    }
+                        &mut self.edit_project_buffer
+                    };
+                    let byte_idx = buf.char_indices()
+                        .nth(self.edit_cursor_pos - 1)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    buf.remove(byte_idx);
                     self.edit_cursor_pos -= 1;
                 }
                 self.suggestion_index = None;
             }
             KeyCode::Delete => {
-                let buf_len = if self.input_mode == InputMode::EditAccount {
-                    self.edit_account_buffer.len()
+                let buf = if self.input_mode == InputMode::EditAccount {
+                    &mut self.edit_account_buffer
                 } else {
-                    self.edit_project_buffer.len()
+                    &mut self.edit_project_buffer
                 };
-                if self.edit_cursor_pos < buf_len {
-                    if self.input_mode == InputMode::EditAccount {
-                        self.edit_account_buffer.remove(self.edit_cursor_pos);
-                    } else {
-                        self.edit_project_buffer.remove(self.edit_cursor_pos);
-                    }
+                if self.edit_cursor_pos < buf.chars().count() {
+                    let byte_idx = buf.char_indices()
+                        .nth(self.edit_cursor_pos)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    buf.remove(byte_idx);
                 }
                 self.suggestion_index = None;
             }
             KeyCode::Char(c) => {
-                if self.input_mode == InputMode::EditAccount {
-                    self.edit_account_buffer.insert(self.edit_cursor_pos, c);
+                let is_valid = if self.input_mode == InputMode::EditAccount {
+                    // Email characters: letters, digits, @, ., -, _, +
+                    c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
                 } else {
-                    self.edit_project_buffer.insert(self.edit_cursor_pos, c);
+                    // GCP project: first char must be a letter, rest: letters, digits, -, _
+                    if self.edit_cursor_pos == 0 {
+                        c.is_ascii_alphabetic()
+                    } else {
+                        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+                    }
+                };
+                if is_valid {
+                    let buf = if self.input_mode == InputMode::EditAccount {
+                        &mut self.edit_account_buffer
+                    } else {
+                        &mut self.edit_project_buffer
+                    };
+                    let byte_idx = buf.char_indices()
+                        .nth(self.edit_cursor_pos)
+                        .map(|(i, _)| i)
+                        .unwrap_or(buf.len());
+                    buf.insert(byte_idx, c);
+                    self.edit_cursor_pos += 1;
                 }
-                self.edit_cursor_pos += 1;
                 self.suggestion_index = None;
             }
             _ => {}

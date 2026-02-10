@@ -260,7 +260,7 @@ fn run_tui() -> Result<()> {
         loop {
             app.check_auth_results();
             app.check_project_results();
-            terminal.draw(|frame| ui::draw(frame, &app))?;
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
             if app.handle_event()? {
                 break;

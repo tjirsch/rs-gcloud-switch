@@ -12,7 +12,7 @@ use ratatui::{
 use crate::app::{App, Column, InputMode};
 use crate::profile::SyncMode;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
 
     // Always use normal mode help line width for stable layout
@@ -91,7 +91,7 @@ fn table_content_width(app: &App) -> usize {
     col_max.iter().sum::<usize>() + 4
 }
 
-fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.profile_names.is_empty() {
         let empty = Paragraph::new("  No profiles. Press 'n' to add one.")
             .style(Style::default().fg(Color::DarkGray));
@@ -217,7 +217,24 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         .column_spacing(0)
         .row_highlight_style(Style::default());
 
-    frame.render_widget(table, area);
+    frame.render_stateful_widget(table, area, &mut app.table_state);
+
+    // Scrollbar for the table when rows overflow
+    let header_height = 2u16;
+    let row_height = 2u16;
+    let visible_rows = area.height.saturating_sub(header_height) / row_height;
+    let total_rows = app.profile_names.len();
+    if total_rows as u16 > visible_rows {
+        let mut scrollbar_state = ScrollbarState::new(total_rows.saturating_sub(visible_rows as usize))
+            .position(app.selected_row.min(total_rows.saturating_sub(visible_rows as usize)));
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(ratatui::layout::Margin { horizontal: 0, vertical: 1 }),
+            &mut scrollbar_state,
+        );
+    }
 
     // Position the terminal cursor for blinking edit cursor
     if matches!(app.input_mode, InputMode::EditAccount | InputMode::EditProject) {
@@ -235,9 +252,10 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
         };
 
         let cursor_x = area.x + col_offset as u16 + app.edit_cursor_pos as u16;
+        let scroll_offset = app.table_state.offset();
         let cursor_y = area.y
             + 2  // header height
-            + (app.selected_row as u16) * 2
+            + (app.selected_row.saturating_sub(scroll_offset) as u16) * 2
             + if app.input_mode == InputMode::EditProject { 1 } else { 0 };
 
         frame.set_cursor_position((cursor_x, cursor_y));
@@ -414,7 +432,8 @@ fn draw_suggestions(frame: &mut Frame, app: &App, table_area: Rect) {
     } else {
         2 // below the project line
     };
-    let dropdown_y = table_area.y + 2 + (app.selected_row as u16) * 2 + row_y_offset;
+    let scroll_offset = app.table_state.offset();
+    let dropdown_y = table_area.y + 2 + (app.selected_row.saturating_sub(scroll_offset) as u16) * 2 + row_y_offset;
 
     // Dropdown dimensions
     let max_item_width = app
