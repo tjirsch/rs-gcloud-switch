@@ -1,6 +1,6 @@
 # gcloud-switch
 
-A TUI (Terminal User Interface) tool for managing and switching between multiple Google Cloud configurations. Quickly switch gcloud user credentials and Application Default Credentials (ADC) across different projects and accounts.
+A TUI (Terminal User Interface) tool for managing and switching between multiple Google Cloud configurations. Quickly switch gcloud user credentials and Application Default Credentials (ADC) across different projects and accounts. Keeps gcloud and gcloud-switch data in sync.
 
 ## Features
 
@@ -10,6 +10,7 @@ A TUI (Terminal User Interface) tool for managing and switching between multiple
 - Visual auth status indicators (🔑 valid / 🔒 expired) per profile
 - Import existing gcloud configurations
 - CLI subcommands for scripting
+- Configurable sync with gcloud configurations (strict, add-only, or off)
 
 ## Installation
 
@@ -48,9 +49,9 @@ Opens an interactive table of profiles. Use the keyboard to navigate and activat
 | `Up` | Move selection up |
 | `Left` | Move column left (Both -> User) |
 | `Right` | Move column right (User -> ADC) |
-| `Enter` | Activate selected profile and quit |
-| `Alt+Enter` | Activate selected profile and stay |
-| `a` | Re-authenticate selected profile |
+| `Enter` | Activate selected profile(s) and quit |
+| `Alt+Enter` | Activate selected profile(s) |
+| `a` | Re-authenticate selected profile(s) |
 | `e` | Edit selected profile in-place |
 | `n` | Add a new profile |
 | `d` | Delete selected profile |
@@ -74,6 +75,18 @@ Suggestions include all account emails from existing profiles plus all authentic
 - **Both** (default): Activates both user config and ADC together
 - **User**: Activates only the gcloud user configuration (account + project)
 - **ADC**: Activates only the Application Default Credentials
+
+### Sync Modes
+
+Press `s` in the TUI to cycle through sync modes. The current mode is shown in the help bar.
+
+| Mode | Behavior |
+|------|----------|
+| **strict** | Bidirectional sync — creating or deleting a profile also creates or deletes the corresponding gcloud configuration |
+| **add** | One-way — new profiles create gcloud configurations, but deleting a profile does not remove the gcloud configuration |
+| **off** | No sync — gcloud configurations are not touched |
+
+The sync mode is persisted across sessions.
 
 ### CLI Subcommands
 
@@ -131,6 +144,8 @@ On startup, gcloud-switch reads `~/.config/gcloud/credentials.db` (a SQLite data
 When activating a profile with an invalid token, gcloud-switch automatically runs:
 - `gcloud auth login --account=<email>` for user credentials
 - `gcloud auth application-default login` for ADC credentials
+
+When activating with the column set to **Both**, this results in two separate browser-based auth dialogs — one for user credentials and one for ADC.
 
 You can also manually trigger re-auth with the `a` key.
 
