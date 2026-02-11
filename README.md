@@ -14,22 +14,24 @@ A TUI (Terminal User Interface) tool for managing and switching between multiple
 
 ## Installation
 
+Requires a working `gcloud` CLI installation.
+
 ```sh
-cargo install --path .
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/tjirsch/gcloud-switch/releases/latest/download/gcloud-switch-installer.sh | sh
 ```
 
-Requires Rust 1.70+ and a working `gcloud` CLI installation.
+Prebuilt binaries can also be downloaded directly from the [Releases](https://github.com/tjirsch/gcloud-switch/releases) page (macOS Intel + Apple Silicon, Linux x86_64 + ARM64).
 
-## Development
+### macOS: "zsh: killed" error
 
-```bash
-cargo build                # Debug build
-cargo build --release      # Release build
-cargo run                  # Build and run the TUI
-cargo check                # Quick type-check without building
-cargo clippy               # Lint
-cargo fmt                  # Format code
+macOS Gatekeeper quarantines unsigned binaries downloaded from the internet. To fix this:
+
+**CLI:**
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/gcloud-switch
 ```
+
+**GUI:** Right-click the binary in Finder, select **Open**, then confirm in the dialog. Alternatively, go to **System Settings > Privacy & Security** and click **Allow Anyway** after the first blocked attempt.
 
 ## Usage
 
@@ -161,7 +163,23 @@ You can also manually trigger re-auth with the `a` key.
 | `~/.config/gcloud/active_config` | gcloud's active configuration pointer |
 | `~/.config/gcloud/application_default_credentials.json` | Active ADC file |
 
-## Architecture
+## License
+
+MIT
+
+## Development
+
+```bash
+cargo install --path .     # Install from source
+cargo build                # Debug build
+cargo build --release      # Release build
+cargo run                  # Build and run the TUI
+cargo check                # Quick type-check without building
+cargo clippy               # Lint
+cargo fmt                  # Format code
+```
+
+### Architecture
 
 Six modules with clear separation:
 
@@ -181,8 +199,4 @@ Six modules with clear separation:
 
 ### Dependencies
 
-Key crates: `ratatui` + `crossterm` (TUI), `clap` (CLI), `tokio` (async runtime), `reqwest` (HTTP for token validation), `rusqlite` with bundled SQLite (credentials.db access), `serde` + `toml` + `serde_json` (serialization), `anyhow` (error handling).
-
-## License
-
-MIT
+Key crates: `ratatui` + `crossterm` (TUI), `clap` (CLI), `reqwest` (HTTP for token validation), `rusqlite` with bundled SQLite (credentials.db access), `serde` + `toml` + `serde_json` (serialization), `anyhow` (error handling).
