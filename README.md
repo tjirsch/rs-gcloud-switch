@@ -2,6 +2,8 @@
 
 A TUI (Terminal User Interface) tool for managing and switching between multiple Google Cloud configurations. Quickly switch gcloud user credentials and Application Default Credentials (ADC) across different projects and accounts. Keeps gcloud and gcloud-switch data in sync.
 
+Fun and learning project of mine from serveral aspects: Rust, OSS, Public Repo, AI.
+
 ## Features
 
 - Interactive TUI for browsing and activating profiles
@@ -17,10 +19,10 @@ A TUI (Terminal User Interface) tool for managing and switching between multiple
 Requires a working `gcloud` CLI installation.
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/tjirsch/gcloud-switch/releases/latest/download/gcloud-switch-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/tjirsch/rs-gcloud-switch/releases/latest/download/gcloud-switch-installer.sh | sh
 ```
 
-Prebuilt binaries can also be downloaded directly from the [Releases](https://github.com/tjirsch/gcloud-switch/releases) page (macOS Intel + Apple Silicon, Linux x86_64 + ARM64).
+Prebuilt binaries can also be downloaded directly from the [Releases](https://github.com/tjirsch/rs-gcloud-switch/releases) page (macOS Intel + Apple Silicon, Linux x86_64 + ARM64).
 
 ### macOS: "zsh: killed" error
 
