@@ -418,17 +418,20 @@ impl App {
             }
             KeyCode::Enter => {
                 let value = self.input_buffer.trim().to_string();
-                if value.is_empty() {
-                    return Ok(());
-                }
                 match self.input_mode {
                     InputMode::AddProfileName => {
+                        if value.is_empty() {
+                            return Ok(());
+                        }
                         self.new_profile_name = value;
                         self.input_buffer.clear();
                         self.input_mode = InputMode::AddProfileUserAccount;
                         self.status_message = Some("Enter user account (email):".to_string());
                     }
                     InputMode::AddProfileUserAccount => {
+                        if value.is_empty() {
+                            return Ok(());
+                        }
                         self.new_profile.user_account = value.clone();
                         self.new_profile.adc_account = value; // default
                         self.input_buffer.clear();
@@ -436,6 +439,9 @@ impl App {
                         self.status_message = Some("Enter user project:".to_string());
                     }
                     InputMode::AddProfileUserProject => {
+                        if value.is_empty() {
+                            return Ok(());
+                        }
                         self.new_profile.user_project = value.clone();
                         self.new_profile.adc_quota_project = value; // default
                         self.input_buffer.clear();
@@ -446,7 +452,12 @@ impl App {
                         ));
                     }
                     InputMode::AddProfileAdcAccount => {
-                        self.new_profile.adc_account = value;
+                        // Empty = accept default from user profile (shown in brackets)
+                        self.new_profile.adc_account = if value.is_empty() {
+                            self.new_profile.adc_account.clone()
+                        } else {
+                            value
+                        };
                         self.input_buffer.clear();
                         self.input_mode = InputMode::AddProfileAdcQuotaProject;
                         self.status_message = Some(format!(
@@ -455,7 +466,12 @@ impl App {
                         ));
                     }
                     InputMode::AddProfileAdcQuotaProject => {
-                        self.new_profile.adc_quota_project = value;
+                        // Empty = accept default from user profile (shown in brackets)
+                        self.new_profile.adc_quota_project = if value.is_empty() {
+                            self.new_profile.adc_quota_project.clone()
+                        } else {
+                            value
+                        };
                         // Create gcloud configuration first (if sync requires it)
                         if matches!(self.sync_mode, SyncMode::Strict | SyncMode::Add) {
                             if let Err(e) = gcloud::create_configuration(

@@ -5,9 +5,11 @@ mod store;
 mod ui;
 
 use std::io;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -54,6 +56,15 @@ enum Commands {
     },
     /// Import existing gcloud configurations
     Import,
+    /// Check for and install new releases from GitHub
+    SelfUpdate {
+        /// Do not download README.md after installing
+        #[arg(long)]
+        no_download_readme: bool,
+        /// Do not open README.md after downloading (only applies if download runs)
+        #[arg(long)]
+        no_open_readme: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -124,6 +135,12 @@ fn main() -> Result<()> {
             if count == 0 {
                 println!("No new gcloud configurations found to import.");
             }
+        }
+        Some(Commands::SelfUpdate {
+            no_download_readme,
+            no_open_readme,
+        }) => {
+            run_self_update(!no_download_readme, !no_open_readme)?;
         }
         None => {
             run_tui()?;
@@ -330,4 +347,184 @@ fn run_tui() -> Result<()> {
     }
 
     loop_result
+}
+
+const REPO: &str = "tjirsch/rs-gcloud-switch";
+const API_URL: &str = "https://api.github.com/repos";
+
+fn run_self_update(download_readme: bool, open_readme: bool) -> Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", current_version);
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("gcloud-switch-update-checker")
+        .build()?;
+
+    let url = format!("{}/{}/releases/latest", API_URL, REPO);
+    let response = client.get(&url).send()?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to fetch release info: {}", response.status());
+    }
+
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+        html_url: String,
+    }
+
+    let release: Release = response.json()?;
+    let latest_version = release.tag_name.trim_start_matches('v');
+    println!("Latest version: {}", latest_version);
+
+    if compare_versions(current_version, latest_version) < 0 {
+        println!("\n⚠️  A new version is available!");
+        println!("   Current: {}", current_version);
+        println!("   Latest:  {}", latest_version);
+        println!("   Release: {}", release.html_url);
+        println!("\n📥 Installing update...");
+
+        let installer_url = format!(
+            "https://github.com/{}/releases/latest/download/gcloud-switch-installer.sh",
+            REPO
+        );
+        let installer_script = client.get(&installer_url).send()?.text()?;
+        let temp_file = std::env::temp_dir()
+            .join(format!("gcloud-switch-installer-{}.sh", std::process::id()));
+        std::fs::write(&temp_file, installer_script)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp_file, std::fs::Permissions::from_mode(0o755))?;
+
+            let status = std::process::Command::new("sh").arg(&temp_file).status()?;
+            let _ = std::fs::remove_file(&temp_file);
+
+            if status.success() {
+                println!("✅ Update installed successfully!");
+                println!("   Please restart your terminal or run: source ~/.profile");
+                if download_readme {
+                    match download_and_open_readme(&client, REPO, latest_version, open_readme) {
+                        Ok(Some(path)) => println!("README: {}", path.display()),
+                        Ok(None) => {}
+                        Err(e) => eprintln!("⚠️  Warning: Could not download README: {}", e),
+                    }
+                }
+            } else {
+                anyhow::bail!("Failed to run installer script");
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            anyhow::bail!(
+                "Automatic installation on Windows is not yet supported. Please download and run the installer manually."
+            );
+        }
+    } else {
+        println!("✅ You are running the latest version!");
+    }
+
+    Ok(())
+}
+
+fn download_and_open_readme(
+    client: &reqwest::blocking::Client,
+    repo: &str,
+    version: &str,
+    open_after_download: bool,
+) -> Result<Option<PathBuf>> {
+    let download_dir = get_download_dir()?;
+    let readme_path = download_dir.join(format!("gcloud-switch-{}-README.md", version));
+    let readme_url = format!("https://raw.githubusercontent.com/{}/main/README.md", repo);
+    println!("\n📄 Downloading README...");
+    let readme_content = client.get(&readme_url).send()?.text()?;
+    std::fs::write(&readme_path, readme_content)?;
+    if open_after_download {
+        println!("   Opening README...");
+        open_file(&readme_path)?;
+    }
+    Ok(Some(readme_path))
+}
+
+fn get_download_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")?;
+        Ok(PathBuf::from(home).join("Downloads"))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(dir) = std::env::var("XDG_DOWNLOAD_DIR") {
+            Ok(PathBuf::from(dir))
+        } else {
+            let home = std::env::var("HOME")?;
+            Ok(PathBuf::from(home).join("Downloads"))
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let user_profile = std::env::var("USERPROFILE")?;
+        Ok(PathBuf::from(user_profile).join("Downloads"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        anyhow::bail!("Unsupported platform for download directory");
+    }
+}
+
+fn open_file(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).status()?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if std::process::Command::new("xdg-open")
+            .arg(path)
+            .status()
+            .is_err()
+        {
+            if let Ok(editor) = std::env::var("EDITOR") {
+                std::process::Command::new(editor).arg(path).status()?;
+            } else {
+                anyhow::bail!("Could not open file: xdg-open not available and EDITOR not set");
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", path_str])
+            .status()?;
+    }
+
+    Ok(())
+}
+
+fn compare_versions(v1: &str, v2: &str) -> i32 {
+    let parse_version = |v: &str| -> Vec<u32> { v.split('.').map(|s| s.parse::<u32>().unwrap_or(0)).collect() };
+    let v1_parts = parse_version(v1);
+    let v2_parts = parse_version(v2);
+    let max_len = v1_parts.len().max(v2_parts.len());
+    for i in 0..max_len {
+        let a = v1_parts.get(i).copied().unwrap_or(0);
+        let b = v2_parts.get(i).copied().unwrap_or(0);
+        if a < b {
+            return -1;
+        }
+        if a > b {
+            return 1;
+        }
+    }
+    0
 }

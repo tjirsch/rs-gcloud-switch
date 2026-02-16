@@ -74,6 +74,10 @@ Opens an interactive table of profiles. Use the keyboard to navigate and activat
 
 Suggestions include all account emails from existing profiles plus all authenticated accounts from gcloud's credential store. Project suggestions also include GCP projects accessible by the entered account.
 
+#### Add Profile
+
+When adding a profile (`n`), you are prompted for: profile name, user account, user project, ADC account, then ADC quota project. Prompts show defaults in **brackets**, e.g. `Enter ADC quota project [my-project]:`. **Press Enter with no input to accept the value in brackets** (ADC account and quota project default to the user account and project you just entered). Type a different value and press Enter to override.
+
 ### Column Selection
 
 - **Both** (default): Activates both user config and ADC together
