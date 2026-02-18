@@ -31,6 +31,16 @@ impl Store {
         self.base_dir.join("profiles.toml")
     }
 
+    /// Path to sync config file (sync-config.toml). Used by sync module.
+    pub fn sync_config_path(&self) -> PathBuf {
+        self.base_dir.join("sync-config.toml")
+    }
+
+    /// Path to the git clone used for sync (sync-repo/).
+    pub fn sync_repo_path(&self) -> PathBuf {
+        self.base_dir.join("sync-repo")
+    }
+
     fn adc_dir(&self) -> PathBuf {
         self.base_dir.join("adc")
     }
@@ -80,7 +90,8 @@ impl Store {
         self.adc_path(profile_name).exists()
     }
 
-    pub fn add_profile(&self, name: &str, profile: Profile) -> Result<()> {
+    pub fn add_profile(&self, name: &str, mut profile: Profile) -> Result<()> {
+        profile.touch();
         let mut data = self.load_profiles()?;
         data.profiles.insert(name.to_string(), profile);
         self.save_profiles(&data)

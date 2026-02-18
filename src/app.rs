@@ -125,6 +125,7 @@ impl App {
                 user_project: String::new(),
                 adc_account: String::new(),
                 adc_quota_project: String::new(),
+                updated_at: None,
             },
             edit_col: Column::User,
             edit_account_buffer: String::new(),
@@ -378,12 +379,14 @@ impl App {
                     let mut count = 0;
                     for (name, account, project) in &configs {
                         if !data.profiles.contains_key(name) {
-                            let profile = Profile {
+                            let mut profile = Profile {
                                 user_account: account.clone(),
                                 user_project: project.clone(),
                                 adc_account: account.clone(),
                                 adc_quota_project: project.clone(),
+                                updated_at: None,
                             };
+                            profile.touch();
                             data.profiles.insert(name.clone(), profile);
                             count += 1;
                         }

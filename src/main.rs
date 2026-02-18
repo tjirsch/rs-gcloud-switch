@@ -2,14 +2,15 @@ mod app;
 mod gcloud;
 mod profile;
 mod store;
+mod sync;
 mod ui;
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -64,11 +65,143 @@ enum Commands {
         /// Do not open README.md after downloading (only applies if download runs)
         #[arg(long)]
         no_open_readme: bool,
+        /// Only check if an update is available; do not install or download README
+        #[arg(long)]
+        check_only: bool,
     },
+    /// Sync profile metadata (profiles.toml only) via a Git remote
+    Sync {
+        #[command(subcommand)]
+        sub: SyncSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncSub {
+    /// Set remote URL and optionally clone (run first before push/pull)
+    Init {
+        /// Git remote URL (e.g. https://github.com/user/repo.git or git@github.com:user/repo.git)
+        remote_url: String,
+        /// Branch name (default: main)
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
+    /// Push current profiles to the remote
+    Push,
+    /// Pull and merge profiles from the remote (newer wins per profile)
+    Pull,
+}
+
+/// User-level parameters (e.g. ~/.config/gcloud-switch.toml). Profile data stays in profiles.toml.
+/// This file is created on first run when the program needs to persist settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct GlobalSettings {
+    /// When to check for updates: "never", "always", "daily". Default "always".
+    #[serde(default = "default_self_update_frequency")]
+    self_update_frequency: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_update_check: Option<String>,
+}
+
+fn default_self_update_frequency() -> String {
+    "always".to_string()
+}
+
+fn global_settings_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("gcloud-switch.toml"))
+}
+
+fn load_global_settings() -> GlobalSettings {
+    let path = match global_settings_path() {
+        Some(p) => p,
+        None => return GlobalSettings::default(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return GlobalSettings::default(),
+    };
+    toml::from_str(&content).unwrap_or_default()
+}
+
+fn save_global_settings(settings: &GlobalSettings) -> Result<()> {
+    let path = global_settings_path().context("Could not determine config directory")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let toml = toml::to_string_pretty(settings).context("Serialize global settings")?;
+    std::fs::write(&path, toml)?;
+    Ok(())
+}
+
+fn check_update_available(client: &reqwest::blocking::Client) -> Result<Option<(String, String)>> {
+    let url = format!("{}/{}/releases/latest", API_URL, REPO);
+    let response = client.get(&url).send()?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+        html_url: String,
+    }
+    let release: Release = response.json()?;
+    let latest_version = release.tag_name.trim_start_matches('v').to_string();
+    let current = env!("CARGO_PKG_VERSION");
+    if compare_versions(current, &latest_version) < 0 {
+        Ok(Some((latest_version, release.html_url)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn maybe_check_for_updates(settings: &mut GlobalSettings) -> Result<()> {
+    let freq = settings.self_update_frequency.as_str();
+    if freq == "never" {
+        return Ok(());
+    }
+    if freq == "daily" {
+        if let Some(ref last) = settings.last_update_check {
+            let last_ts: u64 = last.parse().unwrap_or(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now.saturating_sub(last_ts) < 86400 {
+                return Ok(());
+            }
+        }
+    }
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("gcloud-switch-update-checker")
+        .build()?;
+    let update = check_update_available(&client)?;
+    if freq == "daily" {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        settings.last_update_check = Some(now.to_string());
+        let _ = save_global_settings(settings);
+    }
+    if let Some((version, url)) = update {
+        println!(
+            "⚠️  Update available: {} (current: {}). Run `gcloud-switch self-update` to install. {}",
+            version,
+            env!("CARGO_PKG_VERSION"),
+            url
+        );
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Optional: check for updates per global settings (~/.config/gcloud-switch.toml)
+    let mut global_settings = load_global_settings();
+    if !matches!(cli.command, Some(Commands::SelfUpdate { .. })) {
+        let _ = maybe_check_for_updates(&mut global_settings);
+    }
 
     match cli.command {
         Some(Commands::Add {
@@ -85,6 +218,7 @@ fn main() -> Result<()> {
                 user_project: project.clone(),
                 adc_account: adc_account.unwrap_or_else(|| account.clone()),
                 adc_quota_project: adc_quota_project.unwrap_or_else(|| project.clone()),
+                updated_at: None,
             };
             // Create gcloud configuration first so the profile won't be orphaned
             if matches!(data.sync_mode, SyncMode::Strict | SyncMode::Add) {
@@ -139,8 +273,39 @@ fn main() -> Result<()> {
         Some(Commands::SelfUpdate {
             no_download_readme,
             no_open_readme,
+            check_only,
         }) => {
-            run_self_update(!no_download_readme, !no_open_readme)?;
+            run_self_update(!no_download_readme, !no_open_readme, check_only)?;
+        }
+        Some(Commands::Sync { sub }) => {
+            let store = Store::new()?;
+            let config_path = store.sync_config_path();
+            match sub {
+                SyncSub::Init { remote_url, branch } => {
+                    let config = sync::SyncConfig {
+                        remote_url,
+                        branch,
+                    };
+                    sync::save_sync_config(&config_path, &config)?;
+                    println!("Sync config saved. Run 'gcloud-switch sync push' to push, or 'sync pull' to pull.");
+                    if let Some(ref cfg) = sync::load_sync_config(&config_path)? {
+                        sync::ensure_cloned(&store, cfg)?;
+                        println!("Remote cloned to {}.", store.sync_repo_path().display());
+                    }
+                }
+                SyncSub::Push => {
+                    let config = sync::load_sync_config(&config_path)?
+                        .ok_or_else(|| anyhow::anyhow!("Sync not configured. Run 'gcloud-switch sync init <remote_url>' first."))?;
+                    sync::sync_push(&store, &config)?;
+                    println!("Pushed profiles to remote.");
+                }
+                SyncSub::Pull => {
+                    let config = sync::load_sync_config(&config_path)?
+                        .ok_or_else(|| anyhow::anyhow!("Sync not configured. Run 'gcloud-switch sync init <remote_url>' first."))?;
+                    sync::sync_pull(&store, &config)?;
+                    println!("Pulled and merged profiles from remote.");
+                }
+            }
         }
         None => {
             run_tui()?;
@@ -165,12 +330,14 @@ fn import_profiles(store: &Store) -> Result<usize> {
             continue;
         }
 
-        let profile = Profile {
+        let mut profile = Profile {
             user_account: account.clone(),
             user_project: project.clone(),
             adc_account: account.clone(),
             adc_quota_project: project.clone(),
+            updated_at: None,
         };
+        profile.touch();
         data.profiles.insert(name.clone(), profile);
         println!("Imported '{}'.", name);
         count += 1;
@@ -211,12 +378,14 @@ fn sync_on_startup(store: &Store) -> Result<()> {
             // Add new gcloud configs as profiles
             for (name, account, project) in &configs {
                 if !data.profiles.contains_key(name) {
-                    let profile = Profile {
+                    let mut profile = Profile {
                         user_account: account.clone(),
                         user_project: project.clone(),
                         adc_account: account.clone(),
                         adc_quota_project: project.clone(),
+                        updated_at: None,
                     };
+                    profile.touch();
                     data.profiles.insert(name.clone(), profile);
                     changed = true;
                 }
@@ -352,7 +521,7 @@ fn run_tui() -> Result<()> {
 const REPO: &str = "tjirsch/rs-gcloud-switch";
 const API_URL: &str = "https://api.github.com/repos";
 
-fn run_self_update(download_readme: bool, open_readme: bool) -> Result<()> {
+fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     println!("Current version: {}", current_version);
 
@@ -382,6 +551,10 @@ fn run_self_update(download_readme: bool, open_readme: bool) -> Result<()> {
         println!("   Current: {}", current_version);
         println!("   Latest:  {}", latest_version);
         println!("   Release: {}", release.html_url);
+        if check_only {
+            println!("\nRun `gcloud-switch self-update` to install.");
+            return Ok(());
+        }
         println!("\n📥 Installing update...");
 
         let installer_url = format!(

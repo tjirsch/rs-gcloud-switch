@@ -117,7 +117,54 @@ gcloud-switch switch myprofile
 
 # Import existing gcloud configurations
 gcloud-switch import
+
+# Check for and install a new release from GitHub (runs the same installer as curl)
+gcloud-switch self-update
+
+# Only check if an update is available (no install, no README)
+gcloud-switch self-update --check-only
+
+# Skip downloading README after install, or skip opening it
+gcloud-switch self-update --no-download-readme
+gcloud-switch self-update --no-download-readme --no-open-readme
 ```
+
+**Self-update options:** `--no-download-readme`, `--no-open-readme`, `--check-only`. The program can also check for updates automatically when you run other commands; this is controlled by the [configuration file](#configuration-configgcloud-switchtoml) `~/.config/gcloud-switch.toml` (`self_update_frequency`: `never`, `always`, or `daily`).
+
+`self-update` compares the current version with the latest GitHub release; if an update is available it downloads and runs the installer script, then optionally downloads the README to your Downloads folder and opens it.
+
+### Sync profiles via Git (optional)
+
+You can sync profile **metadata only** (profile names, account and project IDs) between machines using your own Git remote (e.g. a private GitHub repo). No credentials or tokens are ever synced; each machine keeps its own `gcloud auth` state.
+
+1. **One-time setup:** set the remote URL (and optional branch):
+   ```sh
+   gcloud-switch sync init https://github.com/you/your-repo.git
+   gcloud-switch sync init https://github.com/you/your-repo.git --branch main
+   ```
+   This writes `~/.config/gcloud/gcloud-switch/sync-config.toml` and clones the repo into `sync-repo/` under that directory. Use SSH or HTTPS; auth is your normal git config (SSH keys or credential helper).
+
+2. **Push** current profiles to the remote:
+   ```sh
+   gcloud-switch sync push
+   ```
+
+3. **Pull** and merge from the remote (newer profile wins per profile; new remote profiles are added; if the same profile changed on both sides you are prompted to keep local or remote):
+   ```sh
+   gcloud-switch sync pull
+   ```
+
+Merge is done profile-by-profile using an `updated_at` timestamp: the newer version wins. If both sides have the same timestamp and different content, the CLI prompts **Keep (L)ocal or (R)emote?**.
+
+## Configuration (~/.config/gcloud-switch.toml)
+
+User-level **parameters** (e.g. when to check for updates) live in **`~/.config/gcloud-switch.toml`**. This file is **created on first run when the program needs to persist something** (e.g. after a daily update check). If the file is missing, defaults are used.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `self_update_frequency` | `"always"` | When to check for updates on normal runs: `never`, `always`, or `daily` (at most once per 24 hours). The check is check-only (no install, no README). |
+
+**Profile data** stays in **`profiles.toml`** under `~/.config/gcloud/gcloud-switch/` (see [File Locations](#file-locations)); it is not moved to `gcloud-switch.toml`.
 
 ## Data Flow
 
@@ -161,8 +208,10 @@ You can also manually trigger re-auth with the `a` key.
 
 | Path | Description |
 |------|-------------|
+| `~/.config/gcloud-switch.toml` | User parameters (e.g. `self_update_frequency`). Created when needed. |
 | `~/.config/gcloud/gcloud-switch/profiles.toml` | Profile definitions |
-| `~/.config/gcloud/gcloud-switch/state.toml` | Active profile state |
+| `~/.config/gcloud/gcloud-switch/sync-config.toml` | Optional Git sync config (remote URL, branch) |
+| `~/.config/gcloud/gcloud-switch/sync-repo/` | Git clone used for sync (profiles.toml only) |
 | `~/.config/gcloud/gcloud-switch/adc/<name>.json` | Stored ADC credentials per profile |
 | `~/.config/gcloud/credentials.db` | gcloud's OAuth2 credential store (read-only) |
 | `~/.config/gcloud/configurations/` | gcloud configuration files (written on activate) |
