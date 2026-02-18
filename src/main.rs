@@ -101,6 +101,19 @@ struct GlobalSettings {
     self_update_frequency: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_update_check: Option<String>,
+    /// Git remote URL for syncing profiles (e.g. https://github.com/user/repo.git)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_url: Option<String>,
+    /// Branch name for sync (default: main)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    /// List of filenames to sync (default: ["profiles.toml"])
+    #[serde(default = "default_sync_files")]
+    sync_files: Vec<String>,
+}
+
+fn default_sync_files() -> Vec<String> {
+    vec!["profiles.toml".to_string()]
 }
 
 impl Default for GlobalSettings {
@@ -108,6 +121,9 @@ impl Default for GlobalSettings {
         Self {
             self_update_frequency: default_self_update_frequency(),
             last_update_check: None,
+            remote_url: None,
+            branch: None,
+            sync_files: default_sync_files(),
         }
     }
 }
@@ -298,30 +314,27 @@ fn main() -> Result<()> {
         }
         Some(Commands::Sync { sub }) => {
             let store = Store::new()?;
-            let config_path = store.sync_config_path();
             match sub {
                 SyncSub::Init { remote_url, branch } => {
-                    let config = sync::SyncConfig {
-                        remote_url,
-                        branch,
-                    };
-                    sync::save_sync_config(&config_path, &config)?;
+                    global_settings.remote_url = Some(remote_url.clone());
+                    global_settings.branch = Some(branch.clone());
+                    save_global_settings(&global_settings)?;
                     println!("Sync config saved. Run 'gcloud-switch sync push' to push, or 'sync pull' to pull.");
-                    if let Some(ref cfg) = sync::load_sync_config(&config_path)? {
-                        sync::ensure_cloned(&store, cfg)?;
-                        println!("Remote cloned to {}.", store.sync_repo_path().display());
-                    }
+                    sync::ensure_cloned(&store, &remote_url, &branch)?;
+                    println!("Remote cloned to {}.", store.sync_repo_path().display());
                 }
                 SyncSub::Push => {
-                    let config = sync::load_sync_config(&config_path)?
+                    let remote_url = global_settings.remote_url.as_ref()
                         .ok_or_else(|| anyhow::anyhow!("Sync not configured. Run 'gcloud-switch sync init <remote_url>' first."))?;
-                    sync::sync_push(&store, &config)?;
+                    let branch = global_settings.branch.as_deref().unwrap_or("main");
+                    sync::sync_push(&store, remote_url, branch, &global_settings.sync_files)?;
                     println!("Pushed profiles to remote.");
                 }
                 SyncSub::Pull => {
-                    let config = sync::load_sync_config(&config_path)?
+                    let remote_url = global_settings.remote_url.as_ref()
                         .ok_or_else(|| anyhow::anyhow!("Sync not configured. Run 'gcloud-switch sync init <remote_url>' first."))?;
-                    sync::sync_pull(&store, &config)?;
+                    let branch = global_settings.branch.as_deref().unwrap_or("main");
+                    sync::sync_pull(&store, remote_url, branch, &global_settings.sync_files)?;
                     println!("Pulled and merged profiles from remote.");
                 }
             }

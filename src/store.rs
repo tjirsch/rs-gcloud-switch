@@ -31,14 +31,18 @@ impl Store {
         self.base_dir.join("profiles.toml")
     }
 
-    /// Path to sync config file (sync-config.toml). Used by sync module.
-    pub fn sync_config_path(&self) -> PathBuf {
-        self.base_dir.join("sync-config.toml")
+    /// Path to the git clone used for sync (sync-repo/). Located in ~/.config/gcloud-switch/
+    pub fn sync_repo_path(&self) -> PathBuf {
+        dirs::home_dir()
+            .expect("Could not determine home directory")
+            .join(".config")
+            .join("gcloud-switch")
+            .join("sync-repo")
     }
 
-    /// Path to the git clone used for sync (sync-repo/).
-    pub fn sync_repo_path(&self) -> PathBuf {
-        self.base_dir.join("sync-repo")
+    /// Path to a sync file (e.g., profiles.toml). These files are in ~/.config/gcloud/gcloud-switch/
+    pub fn sync_file_path(&self, filename: &str) -> PathBuf {
+        self.base_dir.join(filename)
     }
 
     fn adc_dir(&self) -> PathBuf {

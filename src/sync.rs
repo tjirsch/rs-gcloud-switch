@@ -1,4 +1,4 @@
-//! Sync profile metadata (profiles.toml only) via a user-supplied Git remote.
+//! Sync profile metadata via a user-supplied Git remote.
 //! No credentials are synced; only profile names and account/project identifiers.
 //! Uses the system `git` CLI so the user's git auth (SSH or credential helper) is used.
 
@@ -8,64 +8,9 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
 use crate::profile::{Profile, ProfilesFile};
 use crate::store::Store;
-
-const SYNC_FILE: &str = "profiles.toml";
-const DEFAULT_BRANCH: &str = "main";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncConfig {
-    /// Git remote URL (e.g. https://github.com/user/repo.git or git@github.com:user/repo.git)
-    pub remote_url: String,
-    /// Branch to push/pull (default main)
-    #[serde(default = "default_branch")]
-    pub branch: String,
-}
-
-fn default_branch() -> String {
-    DEFAULT_BRANCH.to_string()
-}
-
-impl Default for SyncConfig {
-    fn default() -> Self {
-        Self {
-            remote_url: String::new(),
-            branch: DEFAULT_BRANCH.to_string(),
-        }
-    }
-}
-
-/// Load sync config from path. Returns None if file does not exist or is empty.
-pub fn load_sync_config(path: &Path) -> Result<Option<SyncConfig>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    let content = content.trim();
-    if content.is_empty() {
-        return Ok(None);
-    }
-    let config: SyncConfig =
-        toml::from_str(content).with_context(|| "Failed to parse sync-config.toml")?;
-    if config.remote_url.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(config))
-}
-
-/// Save sync config to path.
-pub fn save_sync_config(path: &Path, config: &SyncConfig) -> Result<()> {
-    let content = toml::to_string_pretty(config).context("Failed to serialize sync config")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(())
-}
 
 fn run_git(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
@@ -81,7 +26,7 @@ fn run_git(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
 }
 
 /// Ensure sync repo is cloned. If it doesn't exist, clone the remote (or init + remote if empty).
-pub fn ensure_cloned(store: &Store, config: &SyncConfig) -> Result<()> {
+pub fn ensure_cloned(store: &Store, remote_url: &str, branch: &str) -> Result<()> {
     let repo_path = store.sync_repo_path();
     if repo_path.join(".git").exists() {
         return Ok(());
@@ -91,12 +36,12 @@ pub fn ensure_cloned(store: &Store, config: &SyncConfig) -> Result<()> {
     let path_str = repo_path.as_os_str().to_str().context("repo path")?;
     let s = Command::new("git")
         .current_dir(parent)
-        .args(["clone", "--branch", config.branch.as_str(), config.remote_url.as_str(), path_str])
+        .args(["clone", "--branch", branch, remote_url, path_str])
         .status();
     if s.as_ref().map(|st| !st.success()).unwrap_or(true) {
         let s2 = Command::new("git")
             .current_dir(parent)
-            .args(["clone", config.remote_url.as_str(), path_str])
+            .args(["clone", remote_url, path_str])
             .status();
         if s2.as_ref().map(|st| !st.success()).unwrap_or(true) {
             // Empty remote: init and add remote; first push will create the branch
@@ -104,7 +49,7 @@ pub fn ensure_cloned(store: &Store, config: &SyncConfig) -> Result<()> {
             Command::new("git").current_dir(&repo_path).args(["init"]).status().context("git init")?;
             Command::new("git")
                 .current_dir(&repo_path)
-                .args(["remote", "add", "origin", config.remote_url.as_str()])
+                .args(["remote", "add", "origin", remote_url])
                 .status()
                 .context("git remote add")?;
         }
@@ -112,54 +57,84 @@ pub fn ensure_cloned(store: &Store, config: &SyncConfig) -> Result<()> {
     Ok(())
 }
 
-/// Push current profiles.toml to the remote. Clones if needed.
-pub fn sync_push(store: &Store, config: &SyncConfig) -> Result<()> {
-    ensure_cloned(store, config)?;
+/// Push current sync files to the remote. Clones if needed.
+pub fn sync_push(store: &Store, remote_url: &str, branch: &str, sync_files: &[String]) -> Result<()> {
+    ensure_cloned(store, remote_url, branch)?;
     let repo_path = store.sync_repo_path();
-    let sync_file_path = repo_path.join(SYNC_FILE);
 
-    let data = store.load_profiles()?;
-    let content = toml::to_string_pretty(&data).context("Failed to serialize profiles.toml")?;
-    fs::write(&sync_file_path, content)?;
-
-    run_git(&repo_path, &["add", SYNC_FILE])?;
+    for filename in sync_files {
+        let local_path = store.sync_file_path(filename);
+        let repo_file_path = repo_path.join(filename);
+        
+        if filename == "profiles.toml" {
+            let data = store.load_profiles()?;
+            let content = toml::to_string_pretty(&data).context("Failed to serialize profiles.toml")?;
+            fs::write(&repo_file_path, content)?;
+        } else {
+            if local_path.exists() {
+                fs::copy(&local_path, &repo_file_path)?;
+            }
+        }
+        
+        run_git(&repo_path, &["add", filename])?;
+    }
+    
     if run_git(&repo_path, &["commit", "-m", "gcloud-switch sync"]).is_err() {
         // Nothing to commit (working tree clean) is ok
     }
     run_git(
         &repo_path,
-        &["push", "-u", "origin", config.branch.as_str()],
+        &["push", "-u", "origin", branch],
     )?;
     Ok(())
 }
 
-/// Fetch and merge: get remote profiles.toml, merge by timestamp (newer wins), resolve conflicts by prompting.
-pub fn sync_pull(store: &Store, config: &SyncConfig) -> Result<()> {
-    ensure_cloned(store, config)?;
+/// Fetch and merge: get remote sync files, merge profiles.toml by timestamp (newer wins), resolve conflicts by prompting.
+pub fn sync_pull(store: &Store, remote_url: &str, branch: &str, sync_files: &[String]) -> Result<()> {
+    ensure_cloned(store, remote_url, branch)?;
     let repo_path = store.sync_repo_path();
 
-    run_git(&repo_path, &["fetch", "origin", config.branch.as_str()])?;
+    run_git(&repo_path, &["fetch", "origin", branch])?;
 
-    let remote_ref = format!("origin/{}", config.branch);
-    let remote_content = run_git(
-        &repo_path,
-        &["show", format!("{}:{}", remote_ref, SYNC_FILE).as_str()],
-    )
-    .unwrap_or_else(|_| Vec::new());
+    let remote_ref = format!("origin/{}", branch);
+    
+    // First, checkout the remote branch to get all files
+    run_git(&repo_path, &["checkout", "-B", branch, remote_ref.as_str()])?;
+    
+    for filename in sync_files {
+        let repo_file_path = repo_path.join(filename);
+        
+        if filename == "profiles.toml" {
+            let remote_content = if repo_file_path.exists() {
+                fs::read_to_string(&repo_file_path)?
+            } else {
+                String::new()
+            };
+            
+            let local = store.load_profiles()?;
+            let remote_profiles: ProfilesFile = toml::from_str(&remote_content)
+                .unwrap_or_else(|_| ProfilesFile::default());
 
-    let remote_content = String::from_utf8_lossy(&remote_content).to_string();
-    let local = store.load_profiles()?;
-    let remote_profiles: ProfilesFile = toml::from_str(&remote_content)
-        .unwrap_or_else(|_| ProfilesFile::default());
-
-    let merged = merge_profiles(&local, &remote_profiles)?;
-    store.save_profiles(&merged)?;
-
-    // Update sync repo so next push is clean: checkout branch to remote, replace file with merged, commit
-    run_git(&repo_path, &["checkout", "-B", config.branch.as_str(), remote_ref.as_str()])?;
-    let content = toml::to_string_pretty(&merged)?;
-    fs::write(repo_path.join(SYNC_FILE), content)?;
-    run_git(&repo_path, &["add", SYNC_FILE])?;
+            let merged = merge_profiles(&local, &remote_profiles)?;
+            store.save_profiles(&merged)?;
+            
+            // Update sync repo with merged version
+            let content = toml::to_string_pretty(&merged)?;
+            fs::write(&repo_file_path, content)?;
+            run_git(&repo_path, &["add", filename])?;
+        } else {
+            // For non-profiles.toml files, just copy remote version to local
+            if repo_file_path.exists() {
+                let local_path = store.sync_file_path(filename);
+                if let Some(parent) = local_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&repo_file_path, &local_path)?;
+            }
+        }
+    }
+    
+    // Commit merged state
     if run_git(&repo_path, &["commit", "-m", "gcloud-switch sync merge"]).is_err() {
         // No change after merge is ok
     }
