@@ -93,8 +93,8 @@ enum SyncSub {
 }
 
 /// User-level parameters in ~/.config/gcloud-switch/gcloud-switch.toml. Profile data stays in profiles.toml.
-/// This file is created on first run when the program needs to persist settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Created on first run with defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GlobalSettings {
     /// When to check for updates: "never", "always", "daily". Default "always".
     #[serde(default = "default_self_update_frequency")]
@@ -103,24 +103,42 @@ struct GlobalSettings {
     last_update_check: Option<String>,
 }
 
+impl Default for GlobalSettings {
+    fn default() -> Self {
+        Self {
+            self_update_frequency: default_self_update_frequency(),
+            last_update_check: None,
+        }
+    }
+}
+
 fn default_self_update_frequency() -> String {
     "always".to_string()
 }
 
 fn global_settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("gcloud-switch").join("gcloud-switch.toml"))
+    std::env::var("HOME").ok().map(|home| {
+        PathBuf::from(home).join(".config").join("gcloud-switch").join("gcloud-switch.toml")
+    })
 }
 
+/// Load global settings. If the file does not exist, create ~/.config/gcloud-switch/gcloud-switch.toml with default values.
 fn load_global_settings() -> GlobalSettings {
     let path = match global_settings_path() {
         Some(p) => p,
         None => return GlobalSettings::default(),
     };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return GlobalSettings::default(),
-    };
-    toml::from_str(&content).unwrap_or_default()
+    if path.exists() {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return GlobalSettings::default(),
+        };
+        return toml::from_str(&content).unwrap_or_default();
+    }
+    // First run: create directory and write defaults
+    let defaults = GlobalSettings::default();
+    let _ = save_global_settings(&defaults);
+    defaults
 }
 
 fn save_global_settings(settings: &GlobalSettings) -> Result<()> {
@@ -197,8 +215,9 @@ fn maybe_check_for_updates(settings: &mut GlobalSettings) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Optional: check for updates per global settings (~/.config/gcloud-switch/gcloud-switch.toml)
+    // Load/create global settings on first run (creates ~/.config/gcloud-switch/gcloud-switch.toml with defaults)
     let mut global_settings = load_global_settings();
+    // Optional: check for updates per global settings
     if !matches!(cli.command, Some(Commands::SelfUpdate { .. })) {
         let _ = maybe_check_for_updates(&mut global_settings);
     }

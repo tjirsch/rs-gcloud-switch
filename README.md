@@ -158,7 +158,7 @@ Merge is done profile-by-profile using an `updated_at` timestamp: the newer vers
 
 ## Configuration (~/.config/gcloud-switch/gcloud-switch.toml)
 
-User-level **parameters** (e.g. when to check for updates) live in **`~/.config/gcloud-switch/gcloud-switch.toml`**. This file is **created on first run when the program needs to persist something** (e.g. after a daily update check). The folder `~/.config/gcloud-switch/` may already exist (e.g. installer leaves `gcloud-switch-receipt.json` there); the program creates it if needed and writes `gcloud-switch.toml` there. If the file is missing, defaults are used.
+User-level **parameters** (e.g. when to check for updates) live in **`~/.config/gcloud-switch/gcloud-switch.toml`**. This file is **created on first run** with default values (e.g. `self_update_frequency = "always"`). The folder `~/.config/gcloud-switch/` may already exist (e.g. installer leaves `gcloud-switch-receipt.json` there); the program creates it if needed and writes `gcloud-switch.toml` there.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -208,7 +208,7 @@ You can also manually trigger re-auth with the `a` key.
 
 | Path | Description |
 |------|-------------|
-| `~/.config/gcloud-switch/gcloud-switch.toml` | User parameters (e.g. `self_update_frequency`). Created when needed. |
+| `~/.config/gcloud-switch/gcloud-switch.toml` | User parameters (e.g. `self_update_frequency`). Created on first run with defaults. |
 | `~/.config/gcloud/gcloud-switch/profiles.toml` | Profile definitions |
 | `~/.config/gcloud/gcloud-switch/sync-config.toml` | Optional Git sync config (remote URL, branch) |
 | `~/.config/gcloud/gcloud-switch/sync-repo/` | Git clone used for sync (profiles.toml only) |
