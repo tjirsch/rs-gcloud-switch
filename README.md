@@ -129,7 +129,7 @@ gcloud-switch self-update --no-download-readme
 gcloud-switch self-update --no-download-readme --no-open-readme
 ```
 
-**Self-update options:** `--no-download-readme`, `--no-open-readme`, `--check-only`. The program can also check for updates automatically when you run other commands; this is controlled by the [configuration file](#configuration-configgcloud-switchtoml) `~/.config/gcloud-switch.toml` (`self_update_frequency`: `never`, `always`, or `daily`).
+**Self-update options:** `--no-download-readme`, `--no-open-readme`, `--check-only`. The program can also check for updates automatically when you run other commands; this is controlled by the [configuration file](#configuration-configgcloud-switchgcloud-switchtoml) `~/.config/gcloud-switch/gcloud-switch.toml` (`self_update_frequency`: `never`, `always`, or `daily`).
 
 `self-update` compares the current version with the latest GitHub release; if an update is available it downloads and runs the installer script, then optionally downloads the README to your Downloads folder and opens it.
 
@@ -156,15 +156,15 @@ You can sync profile **metadata only** (profile names, account and project IDs) 
 
 Merge is done profile-by-profile using an `updated_at` timestamp: the newer version wins. If both sides have the same timestamp and different content, the CLI prompts **Keep (L)ocal or (R)emote?**.
 
-## Configuration (~/.config/gcloud-switch.toml)
+## Configuration (~/.config/gcloud-switch/gcloud-switch.toml)
 
-User-level **parameters** (e.g. when to check for updates) live in **`~/.config/gcloud-switch.toml`**. This file is **created on first run when the program needs to persist something** (e.g. after a daily update check). If the file is missing, defaults are used.
+User-level **parameters** (e.g. when to check for updates) live in **`~/.config/gcloud-switch/gcloud-switch.toml`**. This file is **created on first run when the program needs to persist something** (e.g. after a daily update check). The folder `~/.config/gcloud-switch/` may already exist (e.g. installer leaves `gcloud-switch-receipt.json` there); the program creates it if needed and writes `gcloud-switch.toml` there. If the file is missing, defaults are used.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `self_update_frequency` | `"always"` | When to check for updates on normal runs: `never`, `always`, or `daily` (at most once per 24 hours). The check is check-only (no install, no README). |
 
-**Profile data** stays in **`profiles.toml`** under `~/.config/gcloud/gcloud-switch/` (see [File Locations](#file-locations)); it is not moved to `gcloud-switch.toml`.
+**Profile data** stays in **`profiles.toml`** under `~/.config/gcloud/gcloud-switch/` (see [File Locations](#file-locations)); it is not stored in `~/.config/gcloud-switch/`.
 
 ## Data Flow
 
@@ -208,7 +208,7 @@ You can also manually trigger re-auth with the `a` key.
 
 | Path | Description |
 |------|-------------|
-| `~/.config/gcloud-switch.toml` | User parameters (e.g. `self_update_frequency`). Created when needed. |
+| `~/.config/gcloud-switch/gcloud-switch.toml` | User parameters (e.g. `self_update_frequency`). Created when needed. |
 | `~/.config/gcloud/gcloud-switch/profiles.toml` | Profile definitions |
 | `~/.config/gcloud/gcloud-switch/sync-config.toml` | Optional Git sync config (remote URL, branch) |
 | `~/.config/gcloud/gcloud-switch/sync-repo/` | Git clone used for sync (profiles.toml only) |

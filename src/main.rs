@@ -92,7 +92,7 @@ enum SyncSub {
     Pull,
 }
 
-/// User-level parameters (e.g. ~/.config/gcloud-switch.toml). Profile data stays in profiles.toml.
+/// User-level parameters in ~/.config/gcloud-switch/gcloud-switch.toml. Profile data stays in profiles.toml.
 /// This file is created on first run when the program needs to persist settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct GlobalSettings {
@@ -108,7 +108,7 @@ fn default_self_update_frequency() -> String {
 }
 
 fn global_settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("gcloud-switch.toml"))
+    dirs::config_dir().map(|d| d.join("gcloud-switch").join("gcloud-switch.toml"))
 }
 
 fn load_global_settings() -> GlobalSettings {
@@ -197,7 +197,7 @@ fn maybe_check_for_updates(settings: &mut GlobalSettings) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Optional: check for updates per global settings (~/.config/gcloud-switch.toml)
+    // Optional: check for updates per global settings (~/.config/gcloud-switch/gcloud-switch.toml)
     let mut global_settings = load_global_settings();
     if !matches!(cli.command, Some(Commands::SelfUpdate { .. })) {
         let _ = maybe_check_for_updates(&mut global_settings);
