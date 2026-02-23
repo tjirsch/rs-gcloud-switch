@@ -24,7 +24,7 @@ use crate::store::Store;
 
 #[derive(Parser)]
 #[command(name = "gcloud-switch", version, about = "TUI Google Cloud profile switcher")]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -74,6 +74,24 @@ enum Commands {
         #[command(subcommand)]
         sub: SyncSub,
     },
+    /// Download and open the latest README from the repository
+    OpenReadme,
+    /// Generate shell completion script
+    Completion {
+        /// Shell to generate completions for: bash, zsh, fish, powershell
+        shell: String,
+        /// Install the completion script to the default location for the shell
+        #[arg(long)]
+        install: bool,
+    },
+    /// Set (or clear) the preferred editor in global settings
+    SetPreferredEditor {
+        /// Editor command to use (e.g. "code", "zed", "vim"). Omit to show current value.
+        editor: Option<String>,
+        /// Remove the preferred_editor setting (fall back to $EDITOR / OS default)
+        #[arg(long)]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -110,6 +128,10 @@ struct GlobalSettings {
     /// List of filenames to sync (default: ["profiles.toml"])
     #[serde(default = "default_sync_files")]
     sync_files: Vec<String>,
+    /// Preferred editor command for opening files (e.g. "code", "zed", "vim").
+    /// Falls back to $EDITOR env var, then the OS default app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preferred_editor: Option<String>,
 }
 
 fn default_sync_files() -> Vec<String> {
@@ -124,6 +146,7 @@ impl Default for GlobalSettings {
             remote_url: None,
             branch: None,
             sync_files: default_sync_files(),
+            preferred_editor: None,
         }
     }
 }
@@ -234,7 +257,7 @@ fn main() -> Result<()> {
     // Load/create global settings on first run (creates ~/.config/gcloud-switch/gcloud-switch.toml with defaults)
     let mut global_settings = load_global_settings();
     // Optional: check for updates per global settings
-    if !matches!(cli.command, Some(Commands::SelfUpdate { .. })) {
+    if !matches!(cli.command, Some(Commands::SelfUpdate { .. }) | Some(Commands::OpenReadme) | Some(Commands::Completion { .. }) | Some(Commands::SetPreferredEditor { .. })) {
         let _ = maybe_check_for_updates(&mut global_settings);
     }
 
@@ -310,7 +333,29 @@ fn main() -> Result<()> {
             no_open_readme,
             check_only,
         }) => {
-            run_self_update(!no_download_readme, !no_open_readme, check_only)?;
+            run_self_update(!no_download_readme, !no_open_readme, check_only, global_settings.preferred_editor.as_deref())?;
+        }
+        Some(Commands::OpenReadme) => {
+            run_open_readme(global_settings.preferred_editor.as_deref())?;
+        }
+        Some(Commands::Completion { shell, install }) => {
+            run_completion(&shell, install)?;
+        }
+        Some(Commands::SetPreferredEditor { editor, clear }) => {
+            if clear {
+                global_settings.preferred_editor = None;
+                save_global_settings(&global_settings)?;
+                println!("✅ preferred_editor cleared (will fall back to $EDITOR / OS default).");
+            } else if let Some(e) = editor {
+                global_settings.preferred_editor = Some(e.clone());
+                save_global_settings(&global_settings)?;
+                println!("✅ preferred_editor set to \"{}\".", e);
+            } else {
+                match &global_settings.preferred_editor {
+                    Some(e) => println!("preferred_editor = \"{}\"", e),
+                    None => println!("preferred_editor is not set (using $EDITOR / OS default)."),
+                }
+            }
         }
         Some(Commands::Sync { sub }) => {
             let store = Store::new()?;
@@ -553,7 +598,7 @@ fn run_tui() -> Result<()> {
 const REPO: &str = "tjirsch/rs-gcloud-switch";
 const API_URL: &str = "https://api.github.com/repos";
 
-fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool) -> Result<()> {
+fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool, preferred_editor: Option<&str>) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     println!("Current version: {}", current_version);
 
@@ -610,7 +655,7 @@ fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool) -
                 println!("✅ Update installed successfully!");
                 println!("   Please restart your terminal or run: source ~/.profile");
                 if download_readme {
-                    match download_and_open_readme(&client, REPO, latest_version, open_readme) {
+                    match download_and_open_readme(&client, REPO, latest_version, open_readme, preferred_editor) {
                         Ok(Some(path)) => println!("README: {}", path.display()),
                         Ok(None) => {}
                         Err(e) => eprintln!("⚠️  Warning: Could not download README: {}", e),
@@ -639,6 +684,7 @@ fn download_and_open_readme(
     repo: &str,
     version: &str,
     open_after_download: bool,
+    preferred_editor: Option<&str>,
 ) -> Result<Option<PathBuf>> {
     let download_dir = get_download_dir()?;
     let readme_path = download_dir.join(format!("gcloud-switch-{}-README.md", version));
@@ -647,8 +693,7 @@ fn download_and_open_readme(
     let readme_content = client.get(&readme_url).send()?.text()?;
     std::fs::write(&readme_path, readme_content)?;
     if open_after_download {
-        println!("   Opening README...");
-        open_file(&readme_path)?;
+        open_file(&readme_path, preferred_editor)?;
     }
     Ok(Some(readme_path))
 }
@@ -682,38 +727,162 @@ fn get_download_dir() -> Result<PathBuf> {
     }
 }
 
-fn open_file(path: &Path) -> Result<()> {
+fn open_file(path: &Path, preferred_editor: Option<&str>) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("File path {:?} contains non-UTF-8 characters", path))?;
+
+    let editor_env = std::env::var("EDITOR").ok();
+    let editor = preferred_editor.or_else(|| editor_env.as_deref());
+
+    if let Some(editor) = editor {
+        println!("   Opening '{}' with '{}'...", path_str, editor);
+        let result = std::process::Command::new(editor).arg(path).status();
+        match result {
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(target_os = "macos")]
+                {
+                    let open_result = std::process::Command::new("open")
+                        .args(["-a", editor, path_str])
+                        .status();
+                    if open_result.map(|s| s.success()).unwrap_or(false) {
+                        return Ok(());
+                    }
+                }
+                anyhow::bail!(
+                    "Editor '{}' not found — is it installed and on your PATH?\n\
+                     Hint: set preferred_editor to the full path in ~/.config/gcloud-switch/gcloud-switch.toml\n\
+                     e.g.  preferred_editor = \"/usr/local/bin/zed\"",
+                    editor
+                );
+            }
+            Err(e) => anyhow::bail!("Failed to launch editor '{}': {}", editor, e),
+        }
+    }
+
+    // No editor configured — use OS default
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(path).status()?;
+        println!("   Opening '{}' with system default app...", path_str);
+        std::process::Command::new("open").arg(path_str).status()?;
     }
 
     #[cfg(target_os = "linux")]
     {
+        println!("   Opening '{}' with xdg-open...", path_str);
         if std::process::Command::new("xdg-open")
-            .arg(path)
+            .arg(path_str)
             .status()
             .is_err()
         {
-            if let Ok(editor) = std::env::var("EDITOR") {
-                std::process::Command::new(editor).arg(path).status()?;
-            } else {
-                anyhow::bail!("Could not open file: xdg-open not available and EDITOR not set");
-            }
+            anyhow::bail!(
+                "Could not open '{}': xdg-open failed and neither preferred_editor nor $EDITOR is set",
+                path_str
+            );
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8"))?;
+        println!("   Opening '{}' with system default app...", path_str);
         std::process::Command::new("cmd")
             .args(["/C", "start", "", path_str])
             .status()?;
     }
 
     Ok(())
+}
+
+fn run_open_readme(preferred_editor: Option<&str>) -> Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("gcloud-switch-open-readme")
+        .build()?;
+    println!("📄 Downloading README...");
+    match download_and_open_readme(&client, REPO, "latest", true, preferred_editor)? {
+        Some(path) => println!("README saved to: {}", path.display()),
+        None => {}
+    }
+    Ok(())
+}
+
+fn run_completion(shell_str: &str, install: bool) -> Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+    use std::str::FromStr;
+
+    let shell = Shell::from_str(shell_str).map_err(|_| {
+        anyhow::anyhow!(
+            "Unknown shell '{}'. Supported shells: bash, zsh, fish, powershell",
+            shell_str
+        )
+    })?;
+
+    let mut cmd = Cli::command();
+    let bin_name = "gcloud-switch";
+
+    if install {
+        let (path, post_install_msg) = completion_install_path(shell)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(&path)?;
+        generate(shell, &mut cmd, bin_name, &mut file);
+        println!("Completion script installed to: {}", path.display());
+        if let Some(msg) = post_install_msg {
+            println!("{}", msg);
+        }
+    } else {
+        generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+    }
+
+    Ok(())
+}
+
+fn completion_install_path(shell: clap_complete::Shell) -> Result<(std::path::PathBuf, Option<String>)> {
+    use clap_complete::Shell;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+    let (path, msg): (std::path::PathBuf, Option<String>) = match shell {
+        Shell::Bash => (
+            std::path::PathBuf::from(format!(
+                "{}/.local/share/bash-completion/completions/gcloud-switch",
+                home
+            )),
+            Some("Ensure bash-completion is installed and sourced in your ~/.bashrc".to_string()),
+        ),
+        Shell::Zsh => (
+            std::path::PathBuf::from(format!("{}/.zsh/completions/_gcloud-switch", home)),
+            Some(
+                "Ensure ~/.zsh/completions is in your fpath — add to ~/.zshrc:\n\
+                   fpath=(~/.zsh/completions $fpath)\n\
+                   autoload -Uz compinit && compinit"
+                    .to_string(),
+            ),
+        ),
+        Shell::Fish => (
+            std::path::PathBuf::from(format!(
+                "{}/.config/fish/completions/gcloud-switch.fish",
+                home
+            )),
+            None,
+        ),
+        Shell::PowerShell => {
+            let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| home.clone());
+            (
+                std::path::PathBuf::from(format!(
+                    r"{}\Documents\PowerShell\Completions\gcloud-switch.ps1",
+                    userprofile
+                )),
+                Some(
+                    "Add to your $PROFILE:\n\
+                       . \"$env:USERPROFILE\\Documents\\PowerShell\\Completions\\gcloud-switch.ps1\""
+                        .to_string(),
+                ),
+            )
+        }
+        _ => anyhow::bail!("Unsupported shell: {:?}", shell),
+    };
+    Ok((path, msg))
 }
 
 fn compare_versions(v1: &str, v2: &str) -> i32 {

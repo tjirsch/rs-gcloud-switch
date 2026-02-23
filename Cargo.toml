@@ -10,6 +10,7 @@ homepage = "https://github.com/tjirsch/rs-gcloud-switch"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4.5"
 crossterm = "0.28"
 dirs = "6"
 ratatui = "0.29"
