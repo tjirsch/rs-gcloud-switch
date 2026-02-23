@@ -1,0 +1,6 @@
+sign-commit = false
+sign-tag = false
+push = true
+publish = false          # set true if you publish to crates.io
+pre-release-commit-message = "version bump"   # match your existing style
+tag-message = ""
