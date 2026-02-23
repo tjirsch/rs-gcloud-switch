@@ -68,6 +68,9 @@ enum Commands {
         /// Only check if an update is available; do not install or download README
         #[arg(long)]
         check_only: bool,
+        /// Skip SHA-256 checksum verification (use only if the release predates sidecar support)
+        #[arg(long)]
+        skip_checksum: bool,
     },
     /// Sync profile metadata (profiles.toml only) via a Git remote
     Sync {
@@ -332,8 +335,9 @@ fn main() -> Result<()> {
             no_download_readme,
             no_open_readme,
             check_only,
+            skip_checksum,
         }) => {
-            run_self_update(!no_download_readme, !no_open_readme, check_only, global_settings.preferred_editor.as_deref())?;
+            run_self_update(!no_download_readme, !no_open_readme, check_only, skip_checksum, global_settings.preferred_editor.as_deref())?;
         }
         Some(Commands::OpenReadme) => {
             run_open_readme(global_settings.preferred_editor.as_deref())?;
@@ -598,7 +602,7 @@ fn run_tui() -> Result<()> {
 const REPO: &str = "tjirsch/rs-gcloud-switch";
 const API_URL: &str = "https://api.github.com/repos";
 
-fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool, preferred_editor: Option<&str>) -> Result<()> {
+fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool, skip_checksum: bool, preferred_editor: Option<&str>) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
     println!("Current version: {}", current_version);
 
@@ -614,9 +618,17 @@ fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool, p
     }
 
     #[derive(Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+    }
+
+    #[derive(Deserialize)]
     struct Release {
         tag_name: String,
         html_url: String,
+        #[serde(default)]
+        assets: Vec<Asset>,
     }
 
     let release: Release = response.json()?;
@@ -638,10 +650,49 @@ fn run_self_update(download_readme: bool, open_readme: bool, check_only: bool, p
             "https://github.com/{}/releases/latest/download/gcloud-switch-installer.sh",
             REPO
         );
-        let installer_script = client.get(&installer_url).send()?.text()?;
+
+        // Download installer as bytes for checksum verification
+        let installer_bytes = client.get(&installer_url).send()?.bytes()?;
+
+        // Checksum verification
+        let checksum_asset = release.assets.iter()
+            .find(|a| a.name == "gcloud-switch-installer.sh.sha256");
+        match checksum_asset {
+            Some(asset) => {
+                let expected_raw = client.get(&asset.browser_download_url)
+                    .send()?.text()?;
+                let expected = expected_raw.trim().split_whitespace().next().unwrap_or("").to_lowercase();
+                use sha2::{Digest, Sha256};
+                let actual = hex::encode(Sha256::digest(&installer_bytes));
+                if actual != expected {
+                    anyhow::bail!(
+                        "Checksum mismatch — installer may have been tampered with.\n\
+                         Expected: {}\n\
+                         Got:      {}\n\
+                         Aborting. Download the release manually from {}",
+                        expected, actual, release.html_url
+                    );
+                }
+                println!("✅ Checksum verified");
+            }
+            None if skip_checksum => {
+                eprintln!(
+                    "⚠️  No checksum file found in this release. \
+                     Proceeding without verification (--skip-checksum)."
+                );
+            }
+            None => {
+                anyhow::bail!(
+                    "No checksum file (gcloud-switch-installer.sh.sha256) found in this release.\n\
+                     Cannot verify installer integrity. Aborting.\n\
+                     If you are confident in the download, re-run with --skip-checksum."
+                );
+            }
+        }
+
         let temp_file = std::env::temp_dir()
             .join(format!("gcloud-switch-installer-{}.sh", std::process::id()));
-        std::fs::write(&temp_file, installer_script)?;
+        std::fs::write(&temp_file, &installer_bytes)?;
 
         #[cfg(unix)]
         {
