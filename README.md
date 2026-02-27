@@ -135,15 +135,15 @@ gcloud-switch open-readme
 gcloud-switch completion bash >> ~/.bash_completion
 gcloud-switch completion zsh --install    # installs to ~/.zsh/completions/_gcloud-switch
 
-# Set preferred editor for opening files
-gcloud-switch set-preferred-editor code
-gcloud-switch set-preferred-editor --clear   # revert to $EDITOR / OS default
-gcloud-switch set-preferred-editor           # show current setting
+# Set editor for opening files
+gcloud-switch set-editor code
+gcloud-switch set-editor --clear   # revert to $EDITOR / OS default
+gcloud-switch set-editor           # show current setting
 ```
 
 **Self-update options:** `--no-download-readme`, `--no-open-readme`, `--check-only`. The program can also check for updates automatically when you run other commands; this is controlled by the [configuration file](#configuration-configgcloud-switchgcloud-switchtoml) `~/.config/gcloud-switch/gcloud-switch.toml` (`self_update_frequency`: `never`, `always`, or `daily`).
 
-`self-update` compares the current version with the latest GitHub release; if an update is available it downloads and runs the installer script, then optionally downloads the README to your Downloads folder and opens it. The editor used to open the README follows the priority: `preferred_editor` config → `$EDITOR` env var → OS default app.
+`self-update` compares the current version with the latest GitHub release; if an update is available it downloads and runs the installer script, then optionally downloads the README to your Downloads folder and opens it. The editor used to open the README follows the priority: `editor` config → `$EDITOR` env var → OS default app.
 
 ### Shell Completion
 
@@ -203,21 +203,21 @@ Merge is done profile-by-profile using an `updated_at` timestamp: the newer vers
 
 ## Configuration (~/.config/gcloud-switch/gcloud-switch.toml)
 
-User-level **parameters** (e.g. when to check for updates, preferred editor) live in **`~/.config/gcloud-switch/gcloud-switch.toml`**. This file is **created on first run** with default values (e.g. `self_update_frequency = "always"`). The folder `~/.config/gcloud-switch/` may already exist (e.g. installer leaves `gcloud-switch-receipt.json` there); the program creates it if needed and writes `gcloud-switch.toml` there.
+User-level **parameters** (e.g. when to check for updates, editor) live in **`~/.config/gcloud-switch/gcloud-switch.toml`**. This file is **created on first run** with default values (e.g. `self_update_frequency = "always"`). The folder `~/.config/gcloud-switch/` may already exist (e.g. installer leaves `gcloud-switch-receipt.json` there); the program creates it if needed and writes `gcloud-switch.toml` there.
 
 Example:
 
 ```toml
 self_update_frequency = "daily"
-preferred_editor = "zed"
+editor = "zed"
 ```
 
-Use `gcloud-switch set-preferred-editor <editor>` to set the editor from the command line.
+Use `gcloud-switch set-editor <editor>` to set the editor from the command line.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `self_update_frequency` | `"always"` | When to check for updates on normal runs: `never`, `always`, or `daily` (at most once per 24 hours). The check is check-only (no install, no README). |
-| `preferred_editor` | *(none)* | Editor command used to open files (e.g. `"zed"`, `"code"`, `"vim"`). Falls back to `$EDITOR` env var, then the OS default app. |
+| `editor` | *(none)* | Editor command used to open files (e.g. `"zed"`, `"code"`, `"vim"`). Falls back to `$EDITOR` env var, then the OS default app. |
 
 **Profile data** stays in **`profiles.toml`** under `~/.config/gcloud/gcloud-switch/` (see [File Locations](#file-locations)); it is not stored in `~/.config/gcloud-switch/`.
 
@@ -263,7 +263,7 @@ You can also manually trigger re-auth with the `a` key.
 
 | Path | Description |
 |------|-------------|
-| `~/.config/gcloud-switch/gcloud-switch.toml` | User parameters (`self_update_frequency`, `preferred_editor`). Created on first run with defaults. |
+| `~/.config/gcloud-switch/gcloud-switch.toml` | User parameters (`self_update_frequency`, `editor`). Created on first run with defaults. |
 | `~/.config/gcloud/gcloud-switch/profiles.toml` | Profile definitions |
 | `~/.config/gcloud/gcloud-switch/sync-config.toml` | Optional Git sync config (remote URL, branch) |
 | `~/.config/gcloud/gcloud-switch/sync-repo/` | Git clone used for sync (profiles.toml only) |
