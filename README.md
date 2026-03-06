@@ -140,6 +140,12 @@ gcloud-switch completion                  # macOS: defaults to zsh --install
 gcloud-switch set-editor code
 gcloud-switch set-editor --clear   # revert to $EDITOR / OS default
 gcloud-switch set-editor           # show current setting
+
+# Print the global config file
+gcloud-switch show-config
+
+# Open the global config file in an editor
+gcloud-switch edit-config
 ```
 
 **Self-update options:** `--no-download-readme`, `--no-open-readme`, `--check-only`. The program can also check for updates automatically when you run other commands; this is controlled by the [configuration file](#configuration-configgcloud-switchgcloud-switchtoml) `~/.config/gcloud-switch/gcloud-switch.toml` (`self_update_frequency`: `never`, `always`, or `daily`).
@@ -215,7 +221,7 @@ self_update_frequency = "daily"
 editor = "zed"
 ```
 
-Use `gcloud-switch set-editor <editor>` to set the editor from the command line.
+Use `gcloud-switch set-editor <editor>` to set the editor, `gcloud-switch show-config` to print the file, and `gcloud-switch edit-config` to open it in an editor.
 
 | Option | Default | Description |
 |--------|---------|-------------|
