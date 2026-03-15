@@ -132,7 +132,7 @@ gcloud-switch self-update --no-download-readme --no-open-readme
 gcloud-switch open-readme
 
 # Generate shell completion script
-gcloud-switch completion bash >> ~/.bash_completion
+gcloud-switch completion bash --install   # installs to ~/.local/share/bash-completion/completions/
 gcloud-switch completion zsh --install    # installs to ~/.zsh/completions/_gcloud-switch
 gcloud-switch completion                  # macOS: defaults to zsh --install
 
@@ -162,9 +162,11 @@ gcloud-switch completion bash
 gcloud-switch completion zsh
 
 # Auto-install to the canonical shell location
+gcloud-switch completion bash --install
+# → installs to ~/.local/share/bash-completion/completions/gcloud-switch
+
 gcloud-switch completion zsh --install
 # → installs to ~/.zsh/completions/_gcloud-switch
-# → prints fpath setup instructions
 
 gcloud-switch completion fish --install
 # → installs to ~/.config/fish/completions/gcloud-switch.fish
@@ -181,10 +183,45 @@ On macOS, running `gcloud-switch completion` without arguments defaults to `zsh 
 | fish | `~/.config/fish/completions/gcloud-switch.fish` |
 | powershell | `%USERPROFILE%\Documents\PowerShell\Completions\gcloud-switch.ps1` |
 
-For zsh, add this to `~/.zshrc` if not already present:
+#### Bash (Ubuntu / Linux)
+
+1. Install the `bash-completion` package if not already present:
+   ```bash
+   sudo apt install bash-completion
+   ```
+
+2. Install the completion script:
+   ```bash
+   gcloud-switch completion bash --install
+   ```
+   This writes the script to `~/.local/share/bash-completion/completions/gcloud-switch`.
+
+3. Ensure `bash-completion` is sourced in your `~/.bashrc`. Most Ubuntu installations include this by default, but verify these lines exist:
+   ```bash
+   if [ -f /usr/share/bash-completion/bash_completion ]; then
+       . /usr/share/bash-completion/bash_completion
+   fi
+   ```
+   The `bash-completion` package automatically discovers user completions from `~/.local/share/bash-completion/completions/` — no extra `source` line is needed for the individual script.
+
+4. Reload your shell:
+   ```bash
+   source ~/.bashrc
+   ```
+
+> **Note:** Do not append the raw completion output to `~/.bashrc` or `~/.bash_completion`. Using `--install` places the script in its own dedicated file under the standard completions directory, which avoids conflicts with other completion scripts.
+
+#### Zsh (macOS)
+
+Add this to `~/.zshrc` if not already present:
 ```zsh
 fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
+```
+
+Then install:
+```zsh
+gcloud-switch completion zsh --install
 ```
 
 ### Sync profiles via Git (optional)
